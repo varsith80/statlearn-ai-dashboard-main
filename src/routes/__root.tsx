@@ -14,6 +14,7 @@ import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { AppShell } from "@/components/layout/AppShell";
 import { Toaster } from "@/components/ui/sonner";
+import { StatMentorChat } from "@/components/common/StatMentorChat";
 
 function NotFoundComponent() {
   return (
@@ -136,6 +137,7 @@ function RootComponent() {
         </AppShell>
       )}
       <Toaster />
+      <StatMentorChat />
     </QueryClientProvider>
   );
 }

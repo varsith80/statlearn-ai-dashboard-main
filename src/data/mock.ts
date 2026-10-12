@@ -322,12 +322,7 @@ export const quizQuestions = [
     id: 1,
     question:
       "Which statistical method is most appropriate for estimating population characteristics from a sample?",
-    options: [
-      "Descriptive analysis",
-      "Sampling estimation",
-      "Data visualization",
-      "Data cleaning",
-    ],
+    options: ["Descriptive analysis", "Sampling estimation", "Data visualization", "Data cleaning"],
     answer: 1,
     explanation:
       "Sampling estimation uses design weights and estimators to infer population parameters from sample observations, which is the basis of all large-scale official surveys.",
@@ -420,12 +415,7 @@ export const quizQuestions = [
   {
     id: 9,
     question: "Which chart type best communicates the composition of GDP by sector over time?",
-    options: [
-      "Scatter plot",
-      "Stacked area chart",
-      "Radar chart",
-      "Box plot",
-    ],
+    options: ["Scatter plot", "Stacked area chart", "Radar chart", "Box plot"],
     answer: 1,
     explanation:
       "A stacked area chart shows both the total and each sector's contribution across a continuous time axis.",

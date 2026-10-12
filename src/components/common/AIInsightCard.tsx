@@ -28,9 +28,7 @@ export function AIInsightCard({
           AI generated
         </span>
       </div>
-      {insight && (
-        <p className="mt-3 text-sm leading-relaxed text-foreground/85">{insight}</p>
-      )}
+      {insight && <p className="mt-3 text-sm leading-relaxed text-foreground/85">{insight}</p>}
       {items && (
         <ul className="mt-3 space-y-2">
           {items.map((item) => (

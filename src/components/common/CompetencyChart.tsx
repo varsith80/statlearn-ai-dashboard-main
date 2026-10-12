@@ -8,13 +8,21 @@ import {
   Legend,
   Tooltip,
 } from "recharts";
-import { competencyRadar } from "@/data/mock";
+import { competencyRadar as defaultRadar } from "@/data/mock";
 
-export function CompetencyChart({ height = 320 }: { height?: number }) {
+export function CompetencyChart({
+  height = 320,
+  data,
+}: {
+  height?: number;
+  data?: Array<{ area: string; score: number; benchmark: number }>;
+}) {
+  const chartData = data || defaultRadar;
+
   return (
     <div style={{ height }} className="w-full">
       <ResponsiveContainer width="100%" height="100%">
-        <RadarChart data={competencyRadar} outerRadius="72%">
+        <RadarChart data={chartData} outerRadius="72%">
           <PolarGrid stroke="var(--color-border)" />
           <PolarAngleAxis
             dataKey="area"

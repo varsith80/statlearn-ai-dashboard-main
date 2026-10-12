@@ -1,11 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import { Sparkles } from "lucide-react";
+import { Sparkles, BrainCircuit } from "lucide-react";
 import { PageHeader, SectionCard } from "@/components/common/PageHeader";
 import { RecommendationCard } from "@/components/common/RecommendationCard";
 import { AIInsightCard } from "@/components/common/AIInsightCard";
 import { Button } from "@/components/ui/button";
 import { recommendations } from "@/data/mock";
+import { useQuizResultsStore } from "@/lib/quiz-store";
 
 export const Route = createFileRoute("/recommendations")({
   head: () => ({
@@ -26,23 +27,52 @@ export const Route = createFileRoute("/recommendations")({
   component: Recommendations,
 });
 
-const filters = ["All", "Statistical Methods", "Data Quality", "Survey Methodology", "Policy & Governance", "Data Visualization"];
+const filters = [
+  "All",
+  "Statistical Methods",
+  "Data Quality",
+  "Survey Methodology",
+  "Policy & Governance",
+  "Data Visualization",
+];
 
 function Recommendations() {
+  const { results } = useQuizResultsStore();
   const [active, setActive] = useState("All");
-  const list = active === "All" ? recommendations : recommendations.filter((c) => c.category === active);
+
+  const latestQuiz = results[0];
+
+  // Dynamic ranking: if latest quiz had a low score on a competency, boost courses matching that competency
+  const dynamicRecommendations = [...recommendations].sort((a, b) => {
+    if (latestQuiz && latestQuiz.percentage < 75) {
+      const isTargetA = Object.keys(latestQuiz.competencyImpact).includes(a.category);
+      const isTargetB = Object.keys(latestQuiz.competencyImpact).includes(b.category);
+      if (isTargetA && !isTargetB) return -1;
+      if (!isTargetA && isTargetB) return 1;
+    }
+    return b.match - a.match;
+  });
+
+  const list =
+    active === "All"
+      ? dynamicRecommendations
+      : dynamicRecommendations.filter((c) => c.category === active);
+
+  const dynamicInsight = latestQuiz
+    ? `Based on your recent assessment on "${latestQuiz.materialName}" (${latestQuiz.percentage}% score), the AI has updated your training priorities, placing higher emphasis on ${Object.keys(latestQuiz.competencyImpact).join(" and ")}.`
+    : "Closing your Data Quality (38%) and Statistical Modelling (24%) gaps has the highest projected impact — an estimated +11 points on your overall competency score within one quarter.";
 
   return (
     <>
       <PageHeader
-        eyebrow="Personalized pathway"
+        eyebrow="Personalized Pathway"
         title="Personalized Learning Recommendations"
-        subtitle="Recommended by AI based on your competency profile, completed courses and Statistical Officer role requirements."
+        subtitle="Recommended by AI based on your competency profile, completed quiz assessments, and Statistical Officer role requirements."
       />
 
       <AIInsightCard
-        title="Why these courses"
-        insight="Closing your Data Quality (38%) and Statistical Modelling (24%) gaps has the highest projected impact — an estimated +11 points on your overall competency score within one quarter."
+        title={latestQuiz ? "AI Assessment-Driven Recommendation" : "Why these courses"}
+        insight={dynamicInsight}
       />
 
       <div className="flex flex-wrap gap-2">
@@ -63,7 +93,7 @@ function Recommendations() {
         description={`${list.length} courses matched to your profile`}
         actions={
           <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Sparkles className="size-3.5 text-violet" /> Ranked by AI match score
+            <Sparkles className="size-3.5 text-violet" /> Ranked by AI match & assessment history
           </span>
         }
       >

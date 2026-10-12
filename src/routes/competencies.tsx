@@ -1,11 +1,12 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { Download, RefreshCw } from "lucide-react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { Download, Sparkles } from "lucide-react";
 import { PageHeader, SectionCard } from "@/components/common/PageHeader";
 import { CompetencyChart } from "@/components/common/CompetencyChart";
 import { SkillGapTable } from "@/components/common/SkillGapTable";
 import { AIInsightCard } from "@/components/common/AIInsightCard";
 import { Button } from "@/components/ui/button";
-import { competencyRadar } from "@/data/mock";
+import { useQuizResultsStore, useUserStore } from "@/lib/quiz-store";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/competencies")({
   head: () => ({
@@ -27,28 +28,54 @@ export const Route = createFileRoute("/competencies")({
 });
 
 function Competencies() {
+  const { competencyRadar, results } = useQuizResultsStore();
+  const { userProfile } = useUserStore();
+  const latestQuiz = results[0];
+
+  const insightText = latestQuiz
+    ? `Your latest assessment on "${latestQuiz.materialName}" scored ${latestQuiz.percentage}%. The AI has calibrated your competency radar. Keep practicing in your priority gap domains to reach Advanced certification.`
+    : "Your strongest area is Data Visualization. Advanced Statistical Modelling and Data Quality require further development to meet the Advanced benchmark before the Q4 review.";
+
+  const handleExportReport = () => {
+    const avg = Math.round(
+      competencyRadar.reduce((acc, c) => acc + c.score, 0) / competencyRadar.length,
+    );
+    const report = `# MoSPI Competency Framework v3.2 — Officer Assessment Dossier\n\n- **Officer:** ${userProfile.name} (${userProfile.role})\n- **Cadre & Employee ID:** ${userProfile.cadre} · ${userProfile.employeeId}\n- **Division:** ${userProfile.office}\n- **Overall Proficiency Index:** ${avg}%\n- **Assessments Completed:** ${results.length}\n\n## Domain Breakdown vs Role Benchmark\n${competencyRadar.map((c) => `- **${c.area}**: ${c.score}% (Role Benchmark: ${c.benchmark}%, Delta: ${c.score - c.benchmark >= 0 ? "+" : ""}${c.score - c.benchmark}%)`).join("\n")}\n\n## AI Executive Diagnostic\n${insightText}\n`;
+
+    const blob = new Blob([report], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `MoSPI-Competency-Report-${userProfile.employeeId.replace(/\//g, "-")}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("Exported official MoSPI Competency Dossier.");
+  };
+
   return (
     <>
       <PageHeader
         eyebrow="Competency Framework v3.2"
         title="Competency Analysis"
-        subtitle="Your assessed proficiency across six statistical competency domains, benchmarked against the Statistical Officer role profile."
+        subtitle="Your assessed proficiency across six statistical competency domains, updated dynamically as you complete AI assessments."
         actions={
-          <>
-            <Button variant="outline" className="gap-2">
-              <Download className="size-4" /> Export report
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={handleExportReport} className="gap-2">
+              <Download className="size-4" /> Export Dossier
             </Button>
-            <Button className="gap-2">
-              <RefreshCw className="size-4" /> Re-run AI assessment
+            <Button asChild className="gap-2">
+              <Link to="/quiz-generator">
+                <Sparkles className="size-4" /> Start AI Assessment
+              </Link>
             </Button>
-          </>
+          </div>
         }
       />
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <SectionCard title="Competency Profile" description="Your score vs role benchmark">
-            <CompetencyChart height={380} />
+            <CompetencyChart height={380} data={competencyRadar} />
           </SectionCard>
         </div>
         <div className="space-y-6">
@@ -76,9 +103,7 @@ function Competencies() {
               ))}
             </ul>
           </SectionCard>
-          <AIInsightCard
-            insight="Your strongest area is Data Visualization. Advanced Statistical Modelling and Data Quality require further development to meet the Advanced benchmark before the Q4 review."
-          />
+          <AIInsightCard insight={insightText} />
         </div>
       </div>
 

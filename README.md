@@ -576,19 +576,19 @@ Use clean folder organization:
 
 src/
 
-  components/
+components/
 
-  pages/
+pages/
 
-  layouts/
+layouts/
 
-  data/
+data/
 
-  hooks/
+hooks/
 
-  utils/
+utils/
 
-  assets/
+assets/
 
 ROUTING:
 
