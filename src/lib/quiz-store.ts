@@ -123,6 +123,105 @@ At the lowest level of aggregation where quantity weights are unavailable, price
 To prevent obsolete consumption baskets from distorting inflation metrics, base periods must be updated every five to seven years based on recent Household Consumption Expenditure Survey (HCES) results.
 `,
   },
+  {
+    id: "mat-governance",
+    name: "MoSPI Governance – Collection of Statistics Act & UN Fundamental Principles.txt",
+    type: "TXT",
+    size: "4.2 KB",
+    uploadedAt: "08 Sep 2026",
+    wordCount: 395,
+    charCount: 2820,
+    detectedTopics: [
+      "Collection of Statistics Act",
+      "National Statistical Commission",
+      "Microdata Confidentiality",
+      "UN Fundamental Principles",
+      "Official Integrity",
+    ],
+    suggestedCompetencies: ["Official Statistics Governance", "Data Quality"],
+    summary:
+      "Statutory foundation of Indian official statistics, statutory powers under the Collection of Statistics Act 2008, NSC advisory mandate, and respondent confidentiality.",
+    content: `Official Statistics Governance, Statutory Framework & Ethical Mandate
+
+1. Statutory Authority – Collection of Statistics Act, 2008:
+The Collection of Statistics Act, 2008 (and Amendment Act, 2017) serves as the primary legislative umbrella empowering central, state, and local governments to conduct official statistical surveys across economic, demographic, and social domains. Statistical officers are legally recognized as public servants and have the statutory authority to inspect books, enter premises for agricultural/industrial enumeration, and require obligatory response from informants.
+
+2. Strict Confidentiality and Microdata Protection:
+Section 9 and Section 11 of the Act strictly safeguard informant data. Individual returns and identifiable commercial microdata cannot be used for taxation, police investigations, judicial proceedings, or regulatory enforcement. Data may only be released in aggregated, anonymized formats to preserve public trust.
+
+3. National Statistical Commission (NSC):
+Established following the recommendations of the Rangarajan Commission (2001), the NSC acts as the apex nodal body entrusted with evolving statistical policies, upholding professional standards, and auditing statistical methodologies across all administrative ministries.
+
+4. UN Fundamental Principles of Official Statistics:
+India formally endorsed the 10 UN Fundamental Principles. Principle 1 establishes that official statistics constitute an indispensable public good and must be published with strict impartiality and equal simultaneous access for all citizens and policymakers.
+`,
+  },
+  {
+    id: "mat-dataviz",
+    name: "Data Visualization & Official Dissemination Guidelines.txt",
+    type: "TXT",
+    size: "3.7 KB",
+    uploadedAt: "10 Sep 2026",
+    wordCount: 350,
+    charCount: 2490,
+    detectedTopics: [
+      "Dashboard Design",
+      "Color Accessibility",
+      "SDG Indicators",
+      "Chart Integrity",
+      "Metadata Dissemination",
+    ],
+    suggestedCompetencies: ["Data Visualization", "Official Statistics Governance"],
+    summary:
+      "Best practices for graphical integrity, colorblind accessibility, interactive public dashboards, and National Indicator Framework (NIF) SDG tracking.",
+    content: `Data Visualization Standards and Official Statistical Dissemination
+
+1. Principles of Graphical Integrity:
+Statistical charts in official reports must represent numbers proportional to the physical quantities displayed. Truncated y-axes on bar charts and artificial 3D perspectives that exaggerate percentage trends are explicitly prohibited. Dual-axis charts must provide clear calibration legends to prevent misleading cross-variable correlations.
+
+2. Accessibility and Color Hierarchy:
+Visualizations must adhere to Web Content Accessibility Guidelines (WCAG 2.1). Crucial trends must not rely solely on color cues. Designers must utilize colorblind-safe palettes (e.g. ColorBrewer Okabe-Ito schemes) with high contrast against light backgrounds.
+
+3. SDG National Indicator Framework (NIF) Dashboards:
+MoSPI disseminates progress on 17 UN Sustainable Development Goals using hierarchical interactive dashboards. Indicators require clear baseline years, target milestone thresholds (e.g., target 2030), and standardized sparkline trends depicting state-level performance parity.
+
+4. Open Data Dissemination Standards:
+Official releases must accompany chart graphics with downloadable raw machine-readable data files in open CSV, JSON, and SDMX (Statistical Data and Metadata eXchange) formats.
+`,
+  },
+  {
+    id: "mat-datamgmt",
+    name: "Administrative Data Pipelines & Statistical Registry Engineering.txt",
+    type: "TXT",
+    size: "4.5 KB",
+    uploadedAt: "12 Sep 2026",
+    wordCount: 410,
+    charCount: 2890,
+    detectedTopics: [
+      "ETL Pipelines",
+      "Administrative Registries",
+      "Relational SQL",
+      "Entity Resolution",
+      "Differential Privacy",
+    ],
+    suggestedCompetencies: ["Data Management", "Statistical Methods"],
+    summary:
+      "Techniques for secondary administrative record linkage (GSTN, EPFO, MCA21), ETL transformation, entity resolution, and relational database integrity.",
+    content: `Administrative Data Management and Modern Statistical Pipelines
+
+1. Role of Administrative Data in Official Statistics:
+Administrative records collected by government agencies during regulatory operations (such as GSTN tax returns, EPFO payroll filings, and MCA21 corporate filings) are increasingly leveraged to supplement or substitute traditional costly field surveys.
+
+2. ETL Architecture and Record Linkage:
+Statistical pipelines utilize Extract, Transform, Load (ETL) workflows to convert disparate transactional datasets into analytical schemas. Entity resolution employs the Fellegi-Sunter probabilistic record linkage methodology when unique national identifiers are partially masked or incomplete.
+
+3. Relational Schema Design and Integrity:
+Official statistical databases require third normal form (3NF) normalization or star/snowflake dimensional schemas for analytical reporting. Foreign key constraints, automated range checks, and audit logging ensure longitudinal integrity across multi-year panel datasets.
+
+4. Privacy-Preserving Computation & Differential Privacy:
+When linking sensitive administrative records with household census data, statistical agencies implement formal Differential Privacy algorithms. By injecting calibrated mathematical noise (Laplace or Gaussian mechanisms), microdata queries can guarantee strong mathematical privacy bounds while preserving aggregated demographic truth.
+`,
+  },
 ];
 
 export interface AppSettings {
@@ -354,6 +453,35 @@ const STORAGE_KEYS = {
 };
 
 const STORAGE_EVENT = "statlearn-storage-sync";
+const DB_STATS_EVENT = "statlearn-db-stats-sync";
+
+export interface SqliteDbStats {
+  connected: boolean;
+  engine: string;
+  dbPath: string;
+  tables: {
+    officers: number;
+    competencies: number;
+    courses: number;
+    materials: number;
+    quiz_results: number;
+    badges: number;
+    igot_sync_logs: number;
+    notifications: number;
+    app_settings: number;
+  };
+  lastQueriedAt: string;
+}
+
+let latestDbStats: SqliteDbStats | null = null;
+let bootstrapStarted = false;
+
+function broadcastDbStats(stats: SqliteDbStats) {
+  latestDbStats = stats;
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(DB_STATS_EVENT, { detail: stats }));
+  }
+}
 
 // Safe localStorage getters/setters for SSR and browser
 function getStored<T>(key: string, fallback: T): T {
@@ -366,20 +494,87 @@ function getStored<T>(key: string, fallback: T): T {
   }
 }
 
-function setStored<T>(key: string, value: T): void {
+function setStored<T>(key: string, value: T, skipServerSync = false): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(key, JSON.stringify(value));
-    window.dispatchEvent(new CustomEvent(STORAGE_EVENT, { detail: { key } }));
+    queueMicrotask(() => {
+      window.dispatchEvent(new CustomEvent(STORAGE_EVENT, { detail: { key } }));
+    });
+
+    if (!skipServerSync && key !== STORAGE_KEYS.PENDING_DOC) {
+      fetch("/api/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value }),
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((payload) => {
+          if (payload?.stats) {
+            broadcastDbStats(payload.stats);
+          }
+        })
+        .catch((err) => {
+          console.warn("SQLite background sync warning:", err);
+        });
+    }
   } catch (err) {
     console.error(`Failed to store ${key}:`, err);
   }
 }
 
+async function ensureBootstrappedFromSqlite(): Promise<void> {
+  if (typeof window === "undefined" || bootstrapStarted) return;
+  bootstrapStarted = true;
+
+  try {
+    const res = await fetch("/api/bootstrap");
+    if (!res.ok) return;
+    const payload = await res.json();
+    if (payload?.stats) {
+      broadcastDbStats(payload.stats);
+    }
+    const d = payload?.data;
+    if (!d) return;
+
+    if (d.userProfile) setStored(STORAGE_KEYS.USER_PROFILE, d.userProfile, true);
+    if (typeof d.officerXp === "number") setStored(STORAGE_KEYS.OFFICER_XP, d.officerXp, true);
+    if (Array.isArray(d.competencyRadar) && d.competencyRadar.length > 0) {
+      setStored(STORAGE_KEYS.RADAR, d.competencyRadar, true);
+    }
+    if (Array.isArray(d.courses) && d.courses.length > 0) {
+      setStored(STORAGE_KEYS.LEARNING_COURSES, d.courses, true);
+    }
+    if (Array.isArray(d.materials) && d.materials.length > 0) {
+      setStored(STORAGE_KEYS.MATERIALS, d.materials, true);
+    }
+    if (Array.isArray(d.quizResults)) {
+      setStored(STORAGE_KEYS.QUIZ_RESULTS, d.quizResults, true);
+    }
+    if (Array.isArray(d.badges) && d.badges.length > 0) {
+      setStored(STORAGE_KEYS.BADGES, d.badges, true);
+    }
+    if (Array.isArray(d.igotSync) && d.igotSync.length > 0) {
+      setStored(STORAGE_KEYS.IGOT_SYNC, d.igotSync, true);
+    }
+    if (Array.isArray(d.notifications) && d.notifications.length > 0) {
+      setStored(STORAGE_KEYS.NOTIFICATIONS, d.notifications, true);
+    }
+    if (d.settings) {
+      setStored(STORAGE_KEYS.SETTINGS, d.settings, true);
+    }
+  } catch (err) {
+    console.warn("SQLite bootstrap warning:", err);
+  }
+}
+
 function useSyncedState<T>(key: string, fallback: T) {
-  const [state, setState] = useState<T>(() => getStored(key, fallback));
+  const [state, setState] = useState<T>(fallback);
 
   useEffect(() => {
+    setState(getStored(key, fallback));
+    void ensureBootstrappedFromSqlite();
+
     const handleSync = (e: Event) => {
       const custom = e as CustomEvent<{ key: string }>;
       if (custom.detail?.key === key) {
@@ -393,13 +588,283 @@ function useSyncedState<T>(key: string, fallback: T) {
   const setSyncedState = (updater: T | ((prev: T) => T)) => {
     setState((prev) => {
       const next = typeof updater === "function" ? (updater as (p: T) => T)(prev) : updater;
-      setStored(key, next);
+      setStored(key, next, false);
       return next;
     });
   };
 
   return [state, setSyncedState] as const;
 }
+
+export function useDatabaseStatus() {
+  const [stats, setStats] = useState<SqliteDbStats | null>(() => latestDbStats);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    void ensureBootstrappedFromSqlite();
+    if (!latestDbStats) {
+      fetch("/api/health")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data?.tables) broadcastDbStats(data);
+        })
+        .catch(() => {});
+    }
+
+    const handleStats = (e: Event) => {
+      const custom = e as CustomEvent<SqliteDbStats>;
+      if (custom.detail) setStats(custom.detail);
+    };
+    window.addEventListener(DB_STATS_EVENT, handleStats);
+    return () => window.removeEventListener(DB_STATS_EVENT, handleStats);
+  }, []);
+
+  const refreshStats = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/health");
+      if (res.ok) {
+        const data = await res.json();
+        broadcastDbStats(data);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runSqlQuery = async (query: string) => {
+    const res = await fetch("/api/sql", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "SQL query failed");
+    }
+    return data as {
+      columns: string[];
+      rows: Array<Record<string, unknown>>;
+      rowCount: number;
+      executionMs: number;
+    };
+  };
+
+  const resetSqliteDb = async () => {
+    const res = await fetch("/api/reset", { method: "POST" });
+    if (!res.ok) throw new Error("Failed to reset SQLite database");
+    const payload = await res.json();
+    if (payload?.stats) broadcastDbStats(payload.stats);
+    const d = payload?.data;
+    if (d) {
+      if (d.userProfile) setStored(STORAGE_KEYS.USER_PROFILE, d.userProfile, true);
+      if (typeof d.officerXp === "number") setStored(STORAGE_KEYS.OFFICER_XP, d.officerXp, true);
+      if (d.competencyRadar) setStored(STORAGE_KEYS.RADAR, d.competencyRadar, true);
+      if (d.courses) setStored(STORAGE_KEYS.LEARNING_COURSES, d.courses, true);
+      if (d.materials) setStored(STORAGE_KEYS.MATERIALS, d.materials, true);
+      if (d.quizResults) setStored(STORAGE_KEYS.QUIZ_RESULTS, d.quizResults, true);
+      if (d.badges) setStored(STORAGE_KEYS.BADGES, d.badges, true);
+      if (d.igotSync) setStored(STORAGE_KEYS.IGOT_SYNC, d.igotSync, true);
+      if (d.notifications) setStored(STORAGE_KEYS.NOTIFICATIONS, d.notifications, true);
+      if (d.settings) setStored(STORAGE_KEYS.SETTINGS, d.settings, true);
+    }
+  };
+
+  return { stats, loading, refreshStats, runSqlQuery, resetSqliteDb };
+}
+
+// Supplementary official notes synced via iGOT Karmayogi API
+export const IGOT_DOMAIN_SUPPLEMENTS: Record<string, NoteDocument[]> = {
+  "Survey Methodology": [
+    {
+      id: "igot-sync-survey-capi",
+      name: "iGOT Karmayogi – CAPI Field Enumeration & Validation Protocols.txt",
+      type: "TXT",
+      size: "5.1 KB",
+      uploadedAt: "10 Nov 2026",
+      wordCount: 450,
+      charCount: 3200,
+      detectedTopics: [
+        "CAPI Validation",
+        "GPS Geotagging",
+        "Listing Schedules",
+        "Non-Response Treatment",
+      ],
+      suggestedCompetencies: ["Survey Methodology", "Data Quality"],
+      summary:
+        "Official iGOT Karmayogi module on Computer Assisted Personal Interviewing (CAPI) hardware validation, real-time consistency checks, and enumerator tracking.",
+      content: `iGOT Karmayogi Capacity Building Module: CAPI Field Operations and Automated Validation Protocols
+Source: National Statistical Systems Training Academy (NSSTA) & iGOT Karmayogi Platform (Course ID: MOSPI-C1-02)
+
+1. CAPI Architecture and Tablet Calibration:
+Field enumerators in modern surveys (such as the Periodic Labour Force Survey - PLFS) utilize dedicated CAPI handheld tablets configured with encrypted local SQLite storage. Range checks, valid jump routines, and mandatory questionnaire sequences are embedded at code level to prevent impossible demographic entries (e.g. child age with tertiary employment).
+
+2. Real-Time Geofencing and Paradata Auditing:
+To guarantee that enumerations occur inside designated First Stage Unit (FSU) boundaries, CAPI devices capture GPS paradata timestamps during the opening and closing of each household schedule. Discrepancies between sampled village centroid coordinates and interview location triggers automated supervisor review.
+
+3. Treatment of Hard-to-Reach and Non-Responding Units:
+In cases where sampled households are locked or informants refuse participation, CAPI protocols dictate at least three revisit attempts scheduled at alternating times of day. Final non-response schedules are coded with granular causal categorization (refusal, temporary migration, casualty) enabling accurate post-stratification non-response weight adjustment.
+`,
+    },
+  ],
+  "Data Quality": [
+    {
+      id: "igot-sync-quality-audit",
+      name: "iGOT Karmayogi – Statistical Quality Audit & Edit Imputation Rules.txt",
+      type: "TXT",
+      size: "4.9 KB",
+      uploadedAt: "10 Nov 2026",
+      wordCount: 430,
+      charCount: 3100,
+      detectedTopics: [
+        "Fellegi-Holt Method",
+        "Cold-Deck vs Hot-Deck",
+        "Quality Audit",
+        "Relevance Metrics",
+      ],
+      suggestedCompetencies: ["Data Quality", "Statistical Methods"],
+      summary:
+        "Advanced iGOT curriculum on modern statistical editing techniques, the Fellegi-Holt principle of minimal change, and donor matching.",
+      content: `iGOT Karmayogi Capacity Building Module: Statistical Quality Audits & Advanced Edit Imputation
+Source: Capacity Building Commission (CBC) & MoSPI Standards Division (Course ID: MOSPI-C2-02)
+
+1. The Fellegi-Holt Paradigm for Automated Editing:
+The fundamental principle of automated statistical data editing (Fellegi and Holt, 1976) mandates that erroneous questionnaire records must be corrected by altering the minimum number of fields necessary to satisfy all logical validation constraints, thereby preserving the original joint frequency distribution of respondent attributes.
+
+2. Deterministic vs. Stochastic Imputation:
+Deterministic imputation applies deductive mathematical relationships (e.g. Total Income = Wages + Remittances). Where multiple valid states exist, stochastic hot-deck imputation identifies a statistically similar 'donor' record within the same geographic stratum and demographic cluster, copying the donor's attribute into the missing record.
+
+3. Monitoring Data Quality Indicators (DQIs):
+Every survey round tracks pre-defined DQIs: Imputation Rate (IR), Edit Failure Ratio (EFR), and Punctuality Slippage (PS). Releases exceeding a 5% item imputation threshold must flag the affected tables with explicit caveat footnotes in official statistical publications.
+`,
+    },
+  ],
+  "Statistical Methods": [
+    {
+      id: "igot-sync-stats-ts",
+      name: "iGOT Karmayogi – Applied Time Series & Seasonal Adjustment (X-13ARIMA-SEATS).txt",
+      type: "TXT",
+      size: "5.4 KB",
+      uploadedAt: "10 Nov 2026",
+      wordCount: 470,
+      charCount: 3350,
+      detectedTopics: [
+        "Seasonal Adjustment",
+        "X-13ARIMA-SEATS",
+        "Index of Industrial Production",
+        "Stationarity",
+      ],
+      suggestedCompetencies: ["Statistical Methods", "Data Management"],
+      summary:
+        "Official guide on seasonal adjustment algorithms (X-13ARIMA-SEATS), moving holiday adjustments, and cyclical trend filtering for Indian macroeconomic indicators.",
+      content: `iGOT Karmayogi Capacity Building Module: Macroeconomic Time Series Modeling & Seasonal Adjustment
+Source: National Accounts & Economic Statistics Wing, MoSPI (Course ID: MOSPI-C4-02)
+
+1. Rationale for Seasonal Adjustment in Economic Series:
+Raw monthly economic indicators (such as the Index of Industrial Production - IIP and Core Sector Growth) exhibit pronounced annual seasonal spikes associated with festivals (Diwali, Dussehra) and agricultural crop harvesting cycles. Unadjusted figures obscure underlying cyclical trends.
+
+2. The X-13ARIMA-SEATS Methodology:
+MoSPI adheres to the internationally accepted X-13ARIMA-SEATS methodology developed by the US Census Bureau and Bank of Spain. The series Y_t is decomposed into Trend-Cycle (T_t), Seasonal (S_t), and Irregular components (I_t):
+Multiplicative model: Y_t = T_t * S_t * I_t
+Additive model: Y_t = T_t + S_t + I_t
+
+3. Moving Holiday and Trading Day Corrections:
+Because lunar calendar festivals shift across Gregorian calendar months each year, regression with ARIMA errors (RegARIMA) pre-adjusts the series for floating festive calendar shifts and number of working trading days before applying symmetric moving average filters.
+`,
+    },
+  ],
+  "Official Statistics Governance": [
+    {
+      id: "igot-sync-gov-trust",
+      name: "iGOT Karmayogi – National Data Governance Framework & Statistical Ethics.txt",
+      type: "TXT",
+      size: "4.7 KB",
+      uploadedAt: "10 Nov 2026",
+      wordCount: 415,
+      charCount: 2950,
+      detectedTopics: [
+        "National Data Governance",
+        "Open Data Policy",
+        "Ethical Standards",
+        "Public Trust",
+      ],
+      suggestedCompetencies: ["Official Statistics Governance", "Data Management"],
+      summary:
+        "Civil service course on the National Data Governance Framework Policy (NDGFP), citizen privacy, and maintaining institutional independence in data dissemination.",
+      content: `iGOT Karmayogi Capacity Building Module: National Data Governance & Statistical Ethics
+Source: Department of Personnel & Training (DoPT) & Capacity Building Commission (Course ID: MOSPI-C6-02)
+
+1. National Data Governance Framework Policy (NDGFP):
+The NDGFP modernizes government data access and sharing protocols. It establishes the India Data Management Office (IDMO) under MeitY and MoSPI to curate non-personal datasets, creating high-quality statistical repositories for research, AI training, and evidence-based policy formulation.
+
+2. Statistical Independence and Impartiality:
+Upholding UN Fundamental Principle 2, statistical personnel must select methods based strictly on scientific principles, professional ethics, and transparency. Statistical analyses must remain free from political pressure regarding survey timings or publication findings.
+
+3. Open Data Licensing and Anonymization:
+Government datasets released on data.gov.in must use open, royalty-free government licenses allowing public reproduction with attribution. Microdata releases undergo strict k-anonymity (k >= 5) and l-diversity verification to prevent re-identification of survey respondents.
+`,
+    },
+  ],
+  "Data Visualization": [
+    {
+      id: "igot-sync-viz-dashboard",
+      name: "iGOT Karmayogi – High-Impact Statistical Storytelling & Public Dashboards.txt",
+      type: "TXT",
+      size: "4.6 KB",
+      uploadedAt: "10 Nov 2026",
+      wordCount: 405,
+      charCount: 2900,
+      detectedTopics: [
+        "Visual Storytelling",
+        "D3.js & Recharts",
+        "Executive Summaries",
+        "Choropleth Maps",
+      ],
+      suggestedCompetencies: ["Data Visualization", "Official Statistics Governance"],
+      summary:
+        "Designing state-of-the-art interactive dashboards, choropleth map cartograms, and infographic summaries for MoSPI publications.",
+      content: `iGOT Karmayogi Capacity Building Module: Statistical Visualization & Public Communication
+Source: Dissemination & Publication Wing, MoSPI & iGOT (Course ID: MOSPI-C5-02)
+
+1. Communicating Statistical Uncertainty:
+Visualizing official estimates without uncertainty margins misinforms the public. Statistical charts depicting sample survey estimates must display 95% confidence intervals, standard error whiskers, or shaded margin-of-error bands.
+
+2. Cartographic Standards and Choropleth Mapping:
+When representing state-level or district-level indicators (e.g. multidimensional poverty headcount ratios), choropleth maps must use equal-interval or Jenks natural breaks classification. Cartographic maps must strictly use Survey of India approved national boundary shapefiles.
+
+3. Executive Infographic Design:
+Official releases must lead with 'Key Statistical Highlights' featuring clear metric cards, direction-of-change badges (positive/negative delta), and concise 1-sentence analytical takeaways rather than raw unformatted numerical tables.
+`,
+    },
+  ],
+  "Data Management": [
+    {
+      id: "igot-sync-mgmt-pipeline",
+      name: "iGOT Karmayogi – Modern Data Architecture & Big Data Integration for Statistics.txt",
+      type: "TXT",
+      size: "5.2 KB",
+      uploadedAt: "10 Nov 2026",
+      wordCount: 460,
+      charCount: 3250,
+      detectedTopics: ["Data Lakehouse", "Parquet Storage", "API Ingestion", "Fast SQL"],
+      suggestedCompetencies: ["Data Management", "Statistical Methods"],
+      summary:
+        "Modern data engineering architectures, columnar Parquet storage, API-based high-throughput ingestion, and SQL optimization for large microdata repositories.",
+      content: `iGOT Karmayogi Capacity Building Module: Scalable Data Pipelines & Statistical Warehousing
+Source: Digital Governance Division & NSSTA (Course ID: MOSPI-C3-02)
+
+1. Data Lakehouse Architecture for National Statistics:
+To accommodate both structured survey databases and unstructured telemetry/sensor data, statistical organizations are adopting hybrid Lakehouse architectures (e.g. Apache Iceberg, Delta Lake) that combine the transactional ACID guarantees of relational DBMS with the low cost of object storage.
+
+2. Columnar Formats for Fast Statistical Aggregations:
+Replacing traditional CSV files with columnar binary formats like Apache Parquet reduces query scan times by over 80% for common statistical aggregations (SUM, AVG, GROUP BY). Columnar compression minimizes disk I/O while speeding up analytical workloads in Python (Pandas/Polars) and R.
+
+3. Secure API Ingestion Gateways:
+Modern administrative data sharing between ministries (e.g. Central Board of Indirect Taxes, Labour Bureau) utilizes RESTful JSON APIs secured via OAuth2, mutual TLS (mTLS), and HMAC signature verification, eliminating insecure manual batch file transfers.
+`,
+    },
+  ],
+};
 
 // Global state hook for materials
 export function useMaterialsStore() {
@@ -423,7 +888,19 @@ export function useMaterialsStore() {
     setMaterials(PRELOADED_NOTES);
   };
 
-  return { materials, addMaterial, removeMaterial, resetMaterials };
+  const syncIgotNotesForDomain = (domain: string): NoteDocument[] => {
+    const supplements = IGOT_DOMAIN_SUPPLEMENTS[domain] || [];
+    if (supplements.length === 0) return [];
+
+    setMaterials((prev) => {
+      const existingIds = new Set(prev.map((m) => m.id));
+      const newItems = supplements.filter((s) => !existingIds.has(s.id));
+      return [...newItems, ...prev];
+    });
+    return supplements;
+  };
+
+  return { materials, addMaterial, removeMaterial, resetMaterials, syncIgotNotesForDomain };
 }
 
 // Global state hook for quizzes & competency results

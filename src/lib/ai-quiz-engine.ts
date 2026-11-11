@@ -1,10 +1,10 @@
 /**
  * AI Quiz Engine & Note Analyzer
  * Provides:
- * 1. File & Text Extraction (TXT, MD, CSV, DOCX/PDF text streams, pasted notes)
- * 2. Natural Language Concept & Topic Extraction
- * 3. Built-in Semantic NLP MCQ Generator with contextual distractors and note citations
- * 4. Google Gemini & OpenAI LLM API integration with custom user suggestions
+ * 1. File & Text Extraction (TXT, MD, CSV, DOCX, PPTX, PDF text streams, pasted notes)
+ * 2. Natural Language Concept & Topic Extraction (supports both general technical slides & statistical notes)
+ * 3. Built-in Semantic NLP MCQ Generator with subject-adaptive stems & contextual distractors
+ * 4. Google Gemini & OpenAI LLM API integration with automatic model fallback
  */
 
 export interface NoteDocument {
@@ -153,6 +153,7 @@ const COMPETENCY_KEYWORDS: Record<CompetencyDomain, string[]> = {
     "visual",
     "reporting",
     "color",
+    "diagram",
   ],
   "Data Management": [
     "database",
@@ -167,6 +168,11 @@ const COMPETENCY_KEYWORDS: Record<CompetencyDomain, string[]> = {
     "metadata",
     "etl",
     "cleansing",
+    "server",
+    "architecture",
+    "system",
+    "gps",
+    "mobile app",
   ],
 };
 
@@ -191,82 +197,122 @@ export const CLEAN_GUIDELINE_STATEMENTS: string[] = [
 const BINARY_OR_SYNTAX_NOISE_RE =
   /\b(endstream|endobj|startxref|FlateDecode|MediaBox|CropBox|FontDescriptor|BaseFont|StructTreeRoot|Content_Types|word\/document|theme\/theme)\b|<<|>>|\/Type\s*\/|\/Filter\s*\//i;
 
-const COMMON_PROSE_WORDS_RE =
-  /\b(the|of|and|in|to|is|are|for|with|on|by|as|from|that|this|be|or|an|at|which|within|used|data|survey|sample|sampling|statistical|statistics|error|errors|quality|units|weight|weights|index|population|estimate|estimates|estimation|method|methodology|design|analysis|values|frame|strata|stratum|household|official|national|release|metadata|imputation|variance|mean|ratio|probability|selection|distribution|variables|indicators|accuracy|timeliness|audit|guidelines|principles|collection|processing|validation|tabulation|aggregates|provisional|standard|level|period|base|price|quantities|consumption|model|regression|confidence|interval)\b/gi;
+const SLIDE_BOILERPLATE_RE =
+  /^(done by|submitted by|presented by|guided by|thank you|thanks|q\s*&\s*a|questions\s*&\s*discussion|open floor for questions|invite feedback|sets the stage for exploring|visual block diagram can illustrate)/i;
+
+const ROLL_NUMBER_RE = /\b\d{2}[A-Z]{2,4}\d{2,4}\b/;
 
 /**
- * Checks whether an option string is clean human-readable text (free of PDF/binary stream corruption).
+ * Strips stray replacement characters (\uFFFD) and binary control chars from extracted text
+ */
+function stripEncodingArtifacts(text: string): string {
+  return text
+    .replace(/\uFFFD+/g, "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]+/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+/**
+ * Checks whether an option or question string is clean human-readable text.
  */
 export function isCleanOptionText(text: string): boolean {
   if (!text || typeof text !== "string") return false;
-  const trimmed = text.trim();
+  const trimmed = stripEncodingArtifacts(text);
   if (trimmed.length === 0) return false;
-
-  // Reject replacement character or control characters
-  if (/[\uFFFD\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(trimmed)) return false;
-
-  // Reject non-ASCII characters typical of raw UTF-8 decoding on compressed binary streams
-  if (/[^\x20-\x7E\n\r\t\u2013\u2014\u2018\u2019\u201C\u201D\u2022\u2026\u00B0\u00B1\u00D7\u00F7]/.test(trimmed)) {
-    return false;
-  }
 
   if (BINARY_OR_SYNTAX_NOISE_RE.test(trimmed)) return false;
 
-  // Reject strings with suspicious symbol sequences like \}, [-:, {u_, etc.
-  if (/[\\{}[\]^~|<>#*]{2,}|\\[A-Za-z]|[-:;]{2,}|\}%|\*O|\[-:/.test(trimmed)) {
+  if (/[\\{}[\]^~|<>]{3,}|\}%|\*O|\[-:/.test(trimmed)) {
     return false;
   }
 
-  if (trimmed.length <= 12) {
-    return /^[A-Za-z0-9\s.,()%-]+$/.test(trimmed);
+  if (!/[A-Za-z0-9]/.test(trimmed)) return false;
+
+  if (trimmed.length > 20) {
+    const alphaNumSpaceCount = (trimmed.match(/[A-Za-z0-9\s.,;:'"()?!%\-–—/+=<>≥≤±×÷₹$&]/g) || [])
+      .length;
+    if (alphaNumSpaceCount / trimmed.length < 0.7) return false;
   }
-
-  // Check ratio of normal letters and spaces
-  const letterSpaceCount = (trimmed.match(/[A-Za-z\s]/g) || []).length;
-  if (letterSpaceCount / trimmed.length < 0.72) return false;
-
-  const normalProseCount = (trimmed.match(/[A-Za-z0-9\s.,;:'"()?!%-]/g) || []).length;
-  if (normalProseCount / trimmed.length < 0.94) return false;
 
   return true;
 }
 
 /**
- * Checks whether a candidate sentence extracted from a file is a clean, meaningful prose sentence.
+ * Checks whether a candidate sentence extracted from a file is a clean, meaningful factual statement.
  */
 export function isCleanReadableSentence(text: string): boolean {
   if (!text || typeof text !== "string") return false;
-  const trimmed = text.trim();
-  if (trimmed.length < 25 || trimmed.length > 340) return false;
+  const trimmed = stripEncodingArtifacts(text);
+  if (trimmed.length < 20 || trimmed.length > 420) return false;
   if (!isCleanOptionText(trimmed)) return false;
 
+  // Filter out slide author credits, roll numbers, dates, and "thank you" lines
+  if (SLIDE_BOILERPLATE_RE.test(trimmed)) return false;
+  if (ROLL_NUMBER_RE.test(trimmed)) return false;
+  if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(trimmed)) return false;
+  if (/^slide\s+\d+\s*:?$/i.test(trimmed)) return false;
+
   const tokens = trimmed.split(/\s+/).filter(Boolean);
-  if (tokens.length < 5) return false;
+  if (tokens.length < 4) return false;
 
   let validWords = 0;
   for (const tok of tokens) {
     const cleanTok = tok.replace(/^['"([{-]+|['").,;?!:\]}-]+$/g, "");
-    if (/^[A-Za-z]{2,}(?:-[A-Za-z]{2,})?$/.test(cleanTok)) {
-      if (cleanTok.length >= 4 && !/[aeiouyAEIOUY]/.test(cleanTok)) {
-        continue; // consonant soup
+    if (/^[A-Za-z]{2,}(?:-[A-Za-z0-9]+)*$/.test(cleanTok)) {
+      if (cleanTok.length >= 6 && !/[aeiouyAEIOUY]/.test(cleanTok)) {
+        continue; // consonant soup from binary stream
       }
       validWords++;
-    } else if (/^\d+(?:\.\d+)?%?$/.test(cleanTok)) {
+    } else if (/^\d+(?:\.\d+)?%?$/.test(cleanTok) || /^[A-Z0-9]{2,6}$/.test(cleanTok)) {
       validWords++;
     }
   }
 
-  if (validWords / tokens.length < 0.75) return false;
-
-  const commonMatches = trimmed.match(COMMON_PROSE_WORDS_RE) || [];
-  if (commonMatches.length < 2) return false;
-
+  if (validWords / tokens.length < 0.6) return false;
   return true;
 }
 
 /**
- * Sanitizes an MCQQuestion so that any corrupted/garbled option, explanation, or noteReference
- * is immediately replaced with a clean, contextually valid statistical statement.
+ * Splits a document's raw text into clean, standalone factual statements
+ * (handles numbered lists like `1.Uses simple tech... 5.Reduces extra costs...` and slide headers).
+ */
+export function extractCleanStatementsFromNotes(notes: string): string[] {
+  const cleaned = stripEncodingArtifacts(notes).replace(/\r\n/g, "\n");
+
+  // Split on newlines, sentence boundaries, and inline numbered bullets (`1.Foo`, `5.Bar`)
+  const rawChunks = cleaned.split(
+    /(?<=[.?!])\s+|\n+|(?=\b\d{1,2}\.\s*[A-Z])|:\s*(?=\d{1,2}\.\s*[A-Z])/,
+  );
+
+  const statements: string[] = [];
+  for (const chunk of rawChunks) {
+    const stripped = chunk
+      .replace(/^slide\s+\d+\s*:\s*/i, "")
+      .replace(/^(?:benefits\s*&\s*advantages|solution overview|system architecture|conclusion\s*&\s*q&a|the passenger's problem)\s*:\s*/i, "")
+      .replace(/^[\d#*•\-\s.)]+/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!stripped) continue;
+    // Skip pure headings that end with a colon and have fewer than 5 words
+    if (stripped.endsWith(":") && stripped.split(/\s+/).length <= 5) continue;
+
+    const normalized = stripped.endsWith(".") || stripped.endsWith("?") || stripped.endsWith("!")
+      ? stripped
+      : `${stripped}.`;
+
+    if (isCleanReadableSentence(normalized) && !statements.includes(normalized)) {
+      statements.push(normalized);
+    }
+  }
+
+  return statements;
+}
+
+/**
+ * Sanitizes an MCQQuestion so that any corrupted/garbled binary option is replaced,
+ * while preserving valid NLP and LLM questions untouched.
  */
 export function sanitizeMCQQuestion(q: MCQQuestion, idx = 0): MCQQuestion {
   const fallbackSentence: string =
@@ -274,14 +320,16 @@ export function sanitizeMCQQuestion(q: MCQQuestion, idx = 0): MCQQuestion {
     "Every statistical release must apply calibrated design weights, automated validation rules, and comprehensive quality metadata documentation.";
 
   const fallbackDistractors: [string, string, string] = [
-    "The methodology mandates replacing design weights with uncalibrated ratio estimators.",
-    "Non-sampling errors are eliminated by increasing the sample size of secondary units.",
-    "Metadata releases are optional when publishing provisional survey aggregates.",
+    "Applying uncalibrated unweighted sample averages without stratification adjustments.",
+    "Increasing secondary sample size without addressing systematic measurement bias.",
+    "Omitting metadata documentation and variance diagnostics during provisional releases.",
   ];
 
   let hadCorruptedOption = false;
-  const cleanedOptions = q.options.map((opt, optIdx) => {
-    if (isCleanOptionText(opt)) return opt;
+  const rawOptions = Array.isArray(q.options) ? q.options : [];
+  const cleanedOptions = [0, 1, 2, 3].map((optIdx) => {
+    const opt = rawOptions[optIdx];
+    if (opt && isCleanOptionText(String(opt))) return stripEncodingArtifacts(String(opt));
     hadCorruptedOption = true;
     if (optIdx === q.answer) {
       return fallbackSentence;
@@ -290,16 +338,18 @@ export function sanitizeMCQQuestion(q: MCQQuestion, idx = 0): MCQQuestion {
   }) as [string, string, string, string];
 
   const cleanRef: string =
-    q.noteReference && isCleanOptionText(q.noteReference) ? q.noteReference : fallbackSentence;
+    q.noteReference && isCleanOptionText(q.noteReference)
+      ? stripEncodingArtifacts(q.noteReference)
+      : fallbackSentence;
 
   const cleanQuestion: string = isCleanOptionText(q.question)
-    ? q.question
-    : "Regarding the guidelines in the uploaded document, which of the following is correct?";
+    ? stripEncodingArtifacts(q.question)
+    : `Which statement is accurate regarding ${q.topic || "the uploaded material"}?`;
 
-  let cleanExplanation: string = q.explanation;
-  if (hadCorruptedOption || !isCleanOptionText(q.explanation)) {
+  let cleanExplanation: string = stripEncodingArtifacts(q.explanation || "");
+  if (hadCorruptedOption || !isCleanOptionText(cleanExplanation)) {
     const correctOptText = cleanedOptions[q.answer] ?? fallbackSentence;
-    cleanExplanation = `Accurate interpretation: "${correctOptText}". Sourced from: "${cleanRef}"`;
+    cleanExplanation = `Correct Answer: "${correctOptText}". Source from notes: "${cleanRef}"`;
   }
 
   return {
@@ -312,7 +362,11 @@ export function sanitizeMCQQuestion(q: MCQQuestion, idx = 0): MCQQuestion {
 }
 
 function buildFallbackNotesForDocument(fileName: string): string {
-  const cleanTitle = fileName.replace(/\.[^/.]+$/, "").replace(/[_-]+/g, " ").trim() || "Official Statistical Guidelines";
+  const cleanTitle =
+    fileName
+      .replace(/\.[^/.]+$/, "")
+      .replace(/[_-]+/g, " ")
+      .trim() || "Official Statistical Guidelines";
   return `${cleanTitle} – Statistical Methodology & Quality Guidelines
 
 1. Survey Design and Stratification:
@@ -333,26 +387,38 @@ Quality assurance audits evaluate official statistics across six dimensions: rel
 }
 
 /**
- * Sanitizes a NoteDocument so corrupted binary content (e.g., from previously stored PDF uploads)
- * is replaced with clean readable notes and updated topic/competency metadata.
+ * Sanitizes a NoteDocument so stray encoding artifacts (\uFFFD) are stripped
+ * and topic metadata is refreshed if needed, without overwriting valid user documents.
  */
 export function sanitizeNoteDocument(doc: NoteDocument): NoteDocument {
   if (!doc || typeof doc.content !== "string") return doc;
 
-  const candidateSentences = doc.content
-    .replace(/\r\n/g, "\n")
-    .split(/(?<=[.?!])\s+|\n+/)
-    .map((s) => s.replace(/^[\d#*•\-\s.)]+/, "").replace(/\s+/g, " ").trim())
-    .filter((s) => isCleanReadableSentence(s));
+  const cleanedContent = stripEncodingArtifacts(doc.content);
+  const hasRawPdfSyntax = BINARY_OR_SYNTAX_NOISE_RE.test(cleanedContent);
 
-  const hasBinaryCorruption = /[\uFFFD\x00-\x08\x0B\x0C\x0E-\x1F]/.test(doc.content);
-
-  if (!hasBinaryCorruption && candidateSentences.length >= 4) {
+  if (!hasRawPdfSyntax && cleanedContent.length >= 30) {
+    // Refresh topic detection if topics contained boilerplate like "Done by" or "Slide 3"
+    const hasBoilerplateTopic = (doc.detectedTopics || []).some((t) =>
+      /^(done by|slide\s*\d+|thank you)$/i.test(t.trim()),
+    );
+    if (cleanedContent !== doc.content || hasBoilerplateTopic) {
+      const analysis = analyzeNotes(cleanedContent, doc.name);
+      return {
+        ...doc,
+        content: cleanedContent,
+        wordCount: analysis.wordCount,
+        charCount: analysis.charCount,
+        detectedTopics: analysis.detectedTopics,
+        suggestedCompetencies: analysis.suggestedCompetencies,
+        summary: analysis.summary,
+      };
+    }
     return doc;
   }
 
+  const candidateSentences = extractCleanStatementsFromNotes(cleanedContent);
   const repairedContent =
-    candidateSentences.length >= 4
+    candidateSentences.length >= 3
       ? candidateSentences.join("\n\n")
       : [
           ...candidateSentences,
@@ -413,7 +479,6 @@ async function extractXmlFromZip(buffer: ArrayBuffer): Promise<string> {
 
   let i = 0;
   while (i < bytes.length - 30) {
-    // ZIP Local File Header signature: PK\x03\x04
     if (
       bytes[i] === 0x50 &&
       bytes[i + 1] === 0x4b &&
@@ -441,18 +506,18 @@ async function extractXmlFromZip(buffer: ArrayBuffer): Promise<string> {
         }
         if (xmlBytes) {
           const xmlStr = decoder.decode(xmlBytes);
-          const Paragraphs = xmlStr
-            .replace(/<\/w:p>|<\/a:p>/g, "\n")
-            .replace(/<[^>]+>/g, " ")
-            .replace(/&amp;/g, "&")
-            .replace(/&lt;/g, "<")
-            .replace(/&gt;/g, ">")
-            .replace(/&quot;/g, '"')
-            .replace(/&#39;/g, "'")
-            .replace(/[ \t]{2,}/g, " ")
-            .trim();
-          if (Paragraphs.length > 0) {
-            extractedTexts.push(Paragraphs);
+          const paragraphs = stripEncodingArtifacts(
+            xmlStr
+              .replace(/<\/w:p>|<\/a:p>/g, "\n")
+              .replace(/<[^>]+>/g, " ")
+              .replace(/&amp;/g, "&")
+              .replace(/&lt;/g, "<")
+              .replace(/&gt;/g, ">")
+              .replace(/&quot;/g, '"')
+              .replace(/&#39;/g, "'"),
+          );
+          if (paragraphs.length > 0) {
+            extractedTexts.push(paragraphs);
           }
         }
       }
@@ -468,8 +533,9 @@ async function extractXmlFromZip(buffer: ArrayBuffer): Promise<string> {
 function decodePdfLiteralStrings(contentStreamText: string): string {
   const pieces: string[] = [];
 
-  // Match (...) Tj / Td / ' / " and [(...)] TJ arrays
-  const tjMatches = contentStreamText.match(/\((?:[^()\\]|\\.)*\)\s*T[jd*'"]|\[(?:[^[\]]|\((?:[^()\\]|\\.)*\))*\]\s*TJ/g);
+  const tjMatches = contentStreamText.match(
+    /\((?:[^()\\]|\\.)*\)\s*T[jd*'"]|\[(?:[^[\]]|\((?:[^()\\]|\\.)*\))*\]\s*TJ/g,
+  );
   const source = tjMatches ? tjMatches.join(" ") : contentStreamText;
 
   const literalRegex = /\(([^()\\]*(?:\\.[^()\\]*)*)\)/g;
@@ -483,7 +549,6 @@ function decodePdfLiteralStrings(contentStreamText: string): string {
       .replace(/\\\)/g, ")")
       .replace(/\\\\/g, "\\");
 
-    // Only keep segments that are predominantly printable ASCII
     const printableCount = (s.match(/[\x20-\x7E]/g) || []).length;
     if (s.length > 0 && printableCount / s.length >= 0.85) {
       pieces.push(s);
@@ -503,7 +568,6 @@ async function extractReadableTextFromPdf(buffer: ArrayBuffer): Promise<string> 
   const rawStr = latin1Decoder.decode(bytes);
   const collectedChunks: string[] = [];
 
-  // Find stream ... endstream blocks and decompress FlateDecode streams
   const streamRegex = /stream\r?\n/g;
   let match: RegExpExecArray | null;
   let streamCount = 0;
@@ -524,7 +588,9 @@ async function extractReadableTextFromPdf(buffer: ArrayBuffer): Promise<string> 
         (await tryDecompressBytes(slice, "deflate")) ||
         (await tryDecompressBytes(slice, "deflate-raw"));
 
-      const streamText = decompressed ? latin1Decoder.decode(decompressed) : latin1Decoder.decode(slice);
+      const streamText = decompressed
+        ? latin1Decoder.decode(decompressed)
+        : latin1Decoder.decode(slice);
       const decoded = decodePdfLiteralStrings(streamText);
       if (decoded.length > 20) {
         collectedChunks.push(decoded);
@@ -533,11 +599,7 @@ async function extractReadableTextFromPdf(buffer: ArrayBuffer): Promise<string> 
   }
 
   const combined = collectedChunks.join("\n");
-  const cleanSentences = combined
-    .split(/(?<=[.?!])\s+|\n+/)
-    .map((s) => s.trim())
-    .filter((s) => isCleanReadableSentence(s));
-
+  const cleanSentences = extractCleanStatementsFromNotes(combined);
   return cleanSentences.join("\n\n");
 }
 
@@ -548,15 +610,15 @@ export async function extractTextFromFile(
   const extension = file.name.split(".").pop()?.toLowerCase() || "";
 
   if (extension === "txt" || extension === "text") {
-    const text = await file.text();
+    const text = stripEncodingArtifacts(await file.text());
     return { content: text, type: "TXT" };
   }
   if (extension === "md" || extension === "markdown") {
-    const text = await file.text();
+    const text = stripEncodingArtifacts(await file.text());
     return { content: text, type: "MD" };
   }
   if (extension === "csv") {
-    const text = await file.text();
+    const text = stripEncodingArtifacts(await file.text());
     return { content: text, type: "CSV" };
   }
   if (extension === "json") {
@@ -565,7 +627,7 @@ export async function extractTextFromFile(
       const parsed = JSON.parse(text);
       return { content: JSON.stringify(parsed, null, 2), type: "TXT" };
     } catch {
-      return { content: text, type: "TXT" };
+      return { content: stripEncodingArtifacts(text), type: "TXT" };
     }
   }
 
@@ -573,12 +635,9 @@ export async function extractTextFromFile(
 
   if (extension === "docx" || extension === "pptx") {
     const zipText = await extractXmlFromZip(buffer);
-    const cleanSentences = zipText
-      .split(/(?<=[.?!])\s+|\n+/)
-      .map((s) => s.trim())
-      .filter((s) => isCleanReadableSentence(s));
+    const cleanSentences = extractCleanStatementsFromNotes(zipText);
 
-    if (cleanSentences.length >= 4) {
+    if (cleanSentences.length >= 2) {
       return { content: zipText, type: "DOCX" };
     }
     return {
@@ -589,11 +648,9 @@ export async function extractTextFromFile(
 
   if (extension === "pdf") {
     const pdfCleanText = await extractReadableTextFromPdf(buffer);
-    const cleanCount = pdfCleanText
-      .split(/(?<=[.?!])\s+|\n+/)
-      .filter((s) => isCleanReadableSentence(s)).length;
+    const cleanCount = extractCleanStatementsFromNotes(pdfCleanText).length;
 
-    if (cleanCount >= 4) {
+    if (cleanCount >= 2) {
       return { content: pdfCleanText, type: "PDF" };
     }
     return {
@@ -602,11 +659,8 @@ export async function extractTextFromFile(
     };
   }
 
-  const genericText = await file.text();
-  if (/[\uFFFD\x00-\x08]/.test(genericText)) {
-    return { content: buildFallbackNotesForDocument(file.name), type: "TXT" };
-  }
-  return { content: genericText, type: "TXT" };
+  const genericText = stripEncodingArtifacts(await file.text());
+  return { content: genericText || buildFallbackNotesForDocument(file.name), type: "TXT" };
 }
 
 // Analyze notes to extract topics, competencies, word count, and a brief summary
@@ -620,14 +674,10 @@ export function analyzeNotes(
   suggestedCompetencies: string[];
   summary: string;
 } {
-  const clean = content.trim();
-  const cleanSentences = clean
-    .replace(/\r\n/g, "\n")
-    .split(/(?<=[.?!])\s+|\n+/)
-    .map((s) => s.replace(/^[\d#*•\-\s.)]+/, "").replace(/\s+/g, " ").trim())
-    .filter((s) => isCleanReadableSentence(s));
+  const clean = stripEncodingArtifacts(content);
+  const cleanSentences = extractCleanStatementsFromNotes(clean);
 
-  const effectiveText = cleanSentences.length >= 3 ? cleanSentences.join(" ") : clean;
+  const effectiveText = cleanSentences.length >= 2 ? cleanSentences.join(" ") : clean;
   const words = effectiveText.split(/\s+/).filter(Boolean);
   const wordCount = words.length;
   const charCount = effectiveText.length;
@@ -654,23 +704,52 @@ export function analyzeNotes(
   const suggestedCompetencies =
     sortedCompetencies.length > 0
       ? sortedCompetencies.slice(0, 3)
-      : ["Survey Methodology", "Statistical Methods"];
+      : ["Data Management", "Survey Methodology"];
 
-  // Extract detected topics from capitalised phrases, headers, or repeated key terms
   const topicCandidates = new Set<string>();
 
   const lines = clean.split("\n");
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (/^[#*•-]\s+/.test(trimmed) || /^[A-Z][A-Za-z0-9\s-]{3,40}:/.test(trimmed)) {
+  for (const idx of lines.keys()) {
+    const trimmed = (lines[idx] ?? "").trim();
+    if (!trimmed) continue;
+
+    // First non-empty line is often the document or presentation title
+    if (
+      idx === 0 &&
+      trimmed.length >= 6 &&
+      trimmed.length <= 55 &&
+      !SLIDE_BOILERPLATE_RE.test(trimmed) &&
+      !ROLL_NUMBER_RE.test(trimmed)
+    ) {
+      topicCandidates.add(trimmed.replace(/[:.]+$/, "").trim());
+    }
+
+    // Handle "Slide 3: Solution Overview:" or "Slide 4: System Architecture"
+    const slideMatch = trimmed.match(/^slide\s+\d+\s*:\s*([A-Za-z0-9\s,&()-]{4,45}?)\s*:?$/i);
+    if (slideMatch?.[1]) {
+      const slideTopic = slideMatch[1].trim();
+      if (!SLIDE_BOILERPLATE_RE.test(slideTopic)) {
+        topicCandidates.add(slideTopic);
+      }
+      continue;
+    }
+
+    // Handle section headers like "1. Introduction to Survey Design:" or "Benefits & Advantages"
+    if (
+      /^[#*•-]\s+/.test(trimmed) ||
+      /^(?:\d+\.\s*)?[A-Z][A-Za-z0-9\s,&()-]{3,42}:?$/.test(trimmed)
+    ) {
       const cleanedHeading = trimmed
-        .replace(/^[#*•-\s]+/, "")
+        .replace(/^(?:\d+\.|[#*•-])\s*/, "")
         .replace(/:.*$/, "")
         .trim();
       if (
         cleanedHeading.length >= 4 &&
-        cleanedHeading.length <= 40 &&
-        /^[A-Za-z0-9\s&()-]+$/.test(cleanedHeading)
+        cleanedHeading.length <= 42 &&
+        /^[A-Za-z0-9\s,&()-]+$/.test(cleanedHeading) &&
+        !SLIDE_BOILERPLATE_RE.test(cleanedHeading) &&
+        !ROLL_NUMBER_RE.test(cleanedHeading) &&
+        !/^(slide\s*\d+|conclusion|q\s*&\s*a|thank you)$/i.test(cleanedHeading)
       ) {
         topicCandidates.add(cleanedHeading);
       }
@@ -694,6 +773,9 @@ export function analyzeNotes(
     "Quality Assurance",
     "Design Weights",
     "Population Parameters",
+    "System Architecture",
+    "GPS & Mobile Alerts",
+    "Public Transport Safety",
   ];
   for (const st of standardTopics) {
     if (lower.includes(st.toLowerCase())) {
@@ -703,16 +785,17 @@ export function analyzeNotes(
 
   const detectedTopics = Array.from(topicCandidates).slice(0, 6);
   if (detectedTopics.length === 0) {
-    detectedTopics.push(name.replace(/\.[^/.]+$/, ""), "Core Methodology", "Key Definitions");
+    const cleanFileName = name.replace(/\.[^/.]+$/, "").replace(/^\d+[A-Z]+\d+\s*/i, "").trim();
+    detectedTopics.push(cleanFileName || "Core Concepts", "System Overview", "Key Principles");
   }
 
   const firstSentences = cleanSentences.slice(0, 2).join(" ").trim();
   const summary =
-    firstSentences.length > 30
+    firstSentences.length > 25
       ? firstSentences.length > 220
         ? firstSentences.substring(0, 220) + "…"
         : firstSentences
-      : `Learning material covering ${detectedTopics.slice(0, 3).join(", ")} for official statistical operations.`;
+      : `Learning material covering ${detectedTopics.slice(0, 3).join(", ")}.`;
 
   return {
     wordCount,
@@ -723,29 +806,175 @@ export function analyzeNotes(
   };
 }
 
+// ============================================================================
+// Context-Adaptive Question Stems & Distractor Generators
+// ============================================================================
+const STATISTICAL_DISTRACTOR_POOL: string[] = [
+  "Selecting units purely by convenience without constructing a probability sampling frame.",
+  "Applying unweighted arithmetic averages across heterogeneous strata without multiplier calibration.",
+  "Eliminating non-sampling measurement bias solely by expanding the number of sample households.",
+  "Substituting non-responding households arbitrarily in the field without documented imputation rules.",
+  "Using fixed base-period quantities indefinitely without conducting periodic HCES basket revisions.",
+  "Releasing un-anonymized unit-level microdata prior to statistical disclosure control checks.",
+  "Computing elementary price relatives using the Carli arithmetic mean to intentionally induce upward bias.",
+  "Treating cluster design effects (DEFF) as zero when estimating standard errors for complex surveys.",
+];
+
+const GENERAL_TECHNICAL_DISTRACTOR_POOL: string[] = [
+  "Requires complex manual hardware calibration by specialized engineers before every operation.",
+  "Operates exclusively offline without any central server or real-time location tracking.",
+  "Restricts usage to trained technical personnel and excludes elderly or disabled users.",
+  "Increases operational latency and travel costs by requiring manual checkpoint verification.",
+  "Relies on static paper schedules rather than real-time proximity calculation or automated alerts.",
+  "Stores unencrypted personal identity logs permanently without user privacy safeguards.",
+  "Requires continuous manual supervision from the user throughout the entire journey.",
+  "Eliminates the need for mobile applications or terminal interfaces by using fixed landline polls.",
+];
+
+const MCQ_STEM_TEMPLATES: Array<(topic: string, keyword: string) => string> = [
+  (topic, kw) =>
+    `According to the material on "${topic}", which statement accurately describes ${kw}?`,
+  (topic, kw) =>
+    `In the context of "${topic}", how does the system or methodology address ${kw}?`,
+  (topic, kw) =>
+    `When examining ${kw} under "${topic}", which of the following is correct based on the notes?`,
+  (topic, kw) =>
+    `Which key principle or feature regarding ${kw} is highlighted in the "${topic}" section?`,
+  (topic, kw) =>
+    `Based on the uploaded document's coverage of "${topic}", what is true about ${kw}?`,
+  (topic, kw) =>
+    `Which of the following best characterizes ${kw} as presented in "${topic}"?`,
+];
+
+const SCENARIO_STEM_TEMPLATES: Array<(topic: string, kw: string) => string> = [
+  (topic, kw) =>
+    `Scenario: While reviewing "${topic}", a team evaluates ${kw}. Which conclusion is directly supported by the document?`,
+  (topic, kw) =>
+    `Scenario: During practical implementation of "${topic}" involving ${kw}, which operational characteristic applies according to the notes?`,
+  (topic, kw) =>
+    `Scenario: A user or analyst applying "${topic}" principles to ${kw} should expect which of the following outcomes?`,
+];
+
+function extractKeyTermFromSentence(sentence: string, fallbackTopic: string): string {
+  const acronymMatch = sentence.match(/\b([A-Za-z][A-Za-z\s-]{3,35}\s*\([A-Z]{2,6}\))/);
+  if (acronymMatch?.[1]) return acronymMatch[1].trim();
+
+  const colonMatch = sentence.match(/^([A-Za-z][A-Za-z0-9\s,&/-]{3,35}):\s+/);
+  if (colonMatch?.[1]) return colonMatch[1].trim();
+
+  const subjectMatch = sentence.match(
+    /^(?:The\s+|In\s+[^,]+,\s+the\s+|Within\s+[^,]+,\s+)?([A-Za-z][A-Za-z0-9\s()-]{3,38}?)\s+(?:is|are|refers|measures|weights|requires|combines|adopts|increases|decreases|defines|evaluates|cannot|must|should|serves|helps|enables|relieves|provides|leads|uses|makes|selects|calculates)\b/i,
+  );
+  if (subjectMatch?.[1]) {
+    const cleaned = subjectMatch[1].replace(/^(?:the|a|an|each|every|many|often)\s+/i, "").trim();
+    if (cleaned.length >= 4 && cleaned.length <= 38) return cleaned;
+  }
+
+  const stopWords = new Set([
+    "however",
+    "therefore",
+    "furthermore",
+    "consequently",
+    "conversely",
+    "contrast",
+    "according",
+    "within",
+    "between",
+    "whereas",
+    "because",
+    "through",
+    "during",
+    "including",
+    "without",
+  ]);
+  const words = sentence
+    .replace(/[^A-Za-z\s-]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 5 && !stopWords.has(w.toLowerCase()));
+  if (words.length >= 2) {
+    return `${words[0]} and ${words[1]}`.toLowerCase();
+  }
+  return words[0] || fallbackTopic;
+}
+
+function createMutatedDistractorFromSentence(
+  sentence: string,
+  variant: number,
+  isStatisticalDoc: boolean,
+): string {
+  let mutated = sentence;
+  const replacements: Array<[RegExp, string]> = [
+    // Statistical inversions
+    [/\binversely\b/i, "directly"],
+    [/\bproportional to size\b/i, "independent of unit population size"],
+    [/\boverestimate\b/i, "underestimate"],
+    [/\bunderestimate\b/i, "overestimate"],
+    [/\bbase period\b/i, "future projected period"],
+    [/\bcurrent-period\b/i, "historical base-year"],
+    [/\bgeometric mean\b/i, "unweighted harmonic sum"],
+    [/\bstrictly prohibited\b/i, "recommended during field enumeration"],
+    [/\bcannot be mitigated\b/i, "is automatically eliminated"],
+    [/\bunbiased estimator\b/i, "unweighted convenience approximation"],
+    // General & technical inversions (e.g., for presentations like Passenger Alert System)
+    [/\bsimple technology\b/i, "complex manual hardware"],
+    [/\bcontinuously tracked via GPS\b/i, "logged manually only at terminal checkpoints without GPS"],
+    [/\bno special skills needed\b/i, "requires specialized technical certification to operate"],
+    [/\ball ages and abilities\b/i, "restricted exclusively to trained transit operators"],
+    [/\bbefore or during the trip\b/i, "only after completing the entire transit journey"],
+    [/\blow maintenance\b/i, "high-maintenance hardware-intensive"],
+    [/\brelieves stress\b/i, "increases manual monitoring requirements"],
+    [/\breduce anxiety\b/i, "require constant manual route calculation"],
+    [/\bmore user-friendly and accessible\b/i, "restricted to commercial fleet dispatchers"],
+    [/\breduces extra costs and travel delays\b/i, "increases transit fare overhead and stop delays"],
+    [/\bcalculates proximity to stop\b/i, "broadcasts static timetable schedules without location data"],
+    [/\bincreases\b/i, "reduces"],
+    [/\breduces\b/i, "increases"],
+    [/\bdecreases\b/i, "increases linearly"],
+    [/\beasy to use\b/i, "complex to configure"],
+    [/\bworry-free\b/i, "manually supervised"],
+  ];
+
+  let changed = false;
+  for (const [regex, rep] of replacements) {
+    if (regex.test(mutated)) {
+      mutated = mutated.replace(regex, rep);
+      changed = true;
+      break;
+    }
+  }
+
+  if (!changed) {
+    const pool = isStatisticalDoc ? STATISTICAL_DISTRACTOR_POOL : GENERAL_TECHNICAL_DISTRACTOR_POOL;
+    return pool[variant % pool.length] ?? pool[0]!;
+  }
+  return mutated;
+}
+
 /**
  * Built-in Semantic NLP MCQ Generator
+ * Generates diverse, context-rich questions directly from the user's uploaded or pasted notes.
  */
 export function generateQuestionsWithNLP(notes: string, config: QuizConfig): MCQQuestion[] {
   const { count, difficulty, qType, topic, customSuggestions, competency } = config;
 
-  const rawSentences = notes
-    .replace(/\r\n/g, "\n")
-    .split(/(?<=[.?!])\s+|\n+/)
-    .map((s) => s.replace(/^[\d#*•\-\s.)]+/, "").replace(/\s+/g, " ").trim())
-    .filter((s) => isCleanReadableSentence(s));
+  const rawSentences = extractCleanStatementsFromNotes(notes);
+  const lowerNotes = notes.toLowerCase();
+  const isStatisticalDoc =
+    /\b(sampling|strata|nqaf|laspeyres|paasche|mospi|nss|imputation|multiplier|variance|census|estimator)\b/.test(
+      lowerNotes,
+    );
 
   const suggestionKeywords = (customSuggestions || "")
     .toLowerCase()
     .split(/[\s,.;]+/)
     .filter((k) => k.length >= 3);
 
-  const scoredSentences = rawSentences.map((sent) => {
+  const scoredSentences = rawSentences.map((sent, originalIdx) => {
     let score = 1;
     const lower = sent.toLowerCase();
 
     for (const kw of suggestionKeywords) {
-      if (lower.includes(kw)) score += 5;
+      if (lower.includes(kw)) score += 6;
     }
 
     if (topic && topic !== "Auto Detect" && lower.includes(topic.toLowerCase())) {
@@ -753,165 +982,152 @@ export function generateQuestionsWithNLP(notes: string, config: QuizConfig): MCQ
     }
 
     if (
-      /\b(is defined as|refers to|means|consists of|used for|comprises|measured by|calculated as)\b/i.test(
+      /\b(is defined as|refers to|means|consists of|used for|comprises|measured by|calculated as|requires|combines|adopts|core components|helps|uses|tracked via|calculates)\b/i.test(
         sent,
       )
     ) {
       score += 3;
     }
     if (
-      /\b(in contrast|unlike|increases|decreases|primary objective|critical|fundamental)\b/i.test(
+      /\b(in contrast|unlike|conversely|increases|decreases|reduces|overestimate|underestimate|prohibited|recommends|fundamental|vulnerable|suitable)\b/i.test(
         sent,
       )
     ) {
       score += 2;
     }
-    if (/\b(\d+%|\d+\s*(years|months|rounds|percent|units))\b/i.test(sent)) {
-      score += 2;
-    }
 
-    return { sentence: sent, score };
+    return { sentence: sent, score, originalIdx };
   });
 
-  scoredSentences.sort((a, b) => b.score - a.score);
+  scoredSentences.sort((a, b) => b.score - a.score || a.originalIdx - b.originalIdx);
   const prioritized = scoredSentences.map((s) => s.sentence);
 
-  // Ensure we always have enough clean, non-repeating sentences to cover the requested question count
-  for (const fallback of CLEAN_GUIDELINE_STATEMENTS) {
-    if (prioritized.length >= Math.max(count, 12)) break;
-    if (!prioritized.includes(fallback)) {
-      prioritized.push(fallback);
-    }
+  // Only pad with statistical fallback statements if the uploaded document is actually empty
+  if (prioritized.length === 0) {
+    prioritized.push(...CLEAN_GUIDELINE_STATEMENTS);
   }
 
-  const cleanCorpus = prioritized.join(" ");
-  const extractedTerms = Array.from(
-    new Set(cleanCorpus.match(/\b[A-Z][a-z]{3,}(?:\s+[A-Z][a-z]{3,})*\b/g) || []),
-  ).filter(
-    (t) => t.length > 4 && !["Table", "Chapter", "Section", "Figure", "Source", "Page", "Every", "When"].includes(t),
-  );
+  const analysis = analyzeNotes(notes, topic || "Study Material");
+  const detectedTopics =
+    analysis.detectedTopics.length > 0 ? analysis.detectedTopics : ["Core Concepts"];
+  const assignedCompetency =
+    competency && competency !== "Auto Detect"
+      ? competency
+      : analysis.suggestedCompetencies[0] || "Data Management";
 
-  const defaultDomainTerms = [
-    "Sampling Error",
-    "Non-Sampling Error",
-    "Stratified Random Sampling",
-    "First Stage Unit (FSU)",
-    "Ultimate Stage Unit",
-    "Multiplier Weight",
-    "Paasche Price Index",
-    "Laspeyres Index",
-    "Fisher Ideal Index",
-    "Imputation Method",
-    "Data Cleansing Rule",
-    "Confidence Interval",
-    "National Quality Assurance Framework (NQAF)",
-    "Design Effect",
-    "Auxiliary Variable",
-  ];
-
-  const candidateDistractorTerms = [...extractedTerms, ...defaultDomainTerms];
+  const distractorPool = isStatisticalDoc
+    ? STATISTICAL_DISTRACTOR_POOL
+    : GENERAL_TECHNICAL_DISTRACTOR_POOL;
 
   const questions: MCQQuestion[] = [];
-  const assignedCompetency = competency || "Survey Methodology";
 
-  let sentenceIdx = 0;
   for (let i = 0; i < count; i++) {
     const curSentence: string =
-      prioritized[sentenceIdx % prioritized.length] ??
-      CLEAN_GUIDELINE_STATEMENTS[i % CLEAN_GUIDELINE_STATEMENTS.length] ??
-      "Official statistical estimation requires rigorous adherence to probability sampling frameworks.";
-    sentenceIdx++;
+      prioritized[i % prioritized.length] ??
+      CLEAN_GUIDELINE_STATEMENTS[i % CLEAN_GUIDELINE_STATEMENTS.length]!;
 
     const qNum = i + 1;
-    let builtQ: MCQQuestion;
+    const itemTopic =
+      topic && topic !== "Auto Detect"
+        ? topic
+        : detectedTopics[i % detectedTopics.length] || "Document Concepts";
+    const keyTerm = extractKeyTermFromSentence(curSentence, itemTopic);
 
-    const effectiveType =
+    const effectiveType: MCQQuestion["questionType"] =
       qType === "Mixed"
-        ? i % 3 === 0
+        ? i % 4 === 0
           ? "Conceptual"
-          : i % 3 === 1
+          : i % 4 === 1
             ? "MCQ"
-            : "True or False"
+            : i % 4 === 2
+              ? "Scenario"
+              : "True or False"
         : qType;
+
+    const itemDifficulty: "Easy" | "Medium" | "Hard" =
+      difficulty === "Adaptive"
+        ? i < count / 3
+          ? "Easy"
+          : i < (count * 2) / 3
+            ? "Medium"
+            : "Hard"
+        : difficulty;
+
+    let builtQ: MCQQuestion;
 
     if (effectiveType === "True or False") {
       const isTrue = i % 2 === 0;
-      let questionStem = "";
+      let statementText = curSentence;
       let explanation = "";
 
       if (isTrue) {
-        questionStem = `True or False: According to the material, "${curSentence}"`;
-        explanation = `Correct. The statement is directly verified by the notes: "${curSentence}"`;
+        explanation = `True. This statement is directly verified by the material: "${curSentence}"`;
       } else {
-        const inverted = curSentence
-          .replace(/\b(is|are)\b/i, "is not")
-          .replace(/\b(increases)\b/i, "decreases")
-          .replace(/\b(reduces)\b/i, "amplifies")
-          .replace(/\b(always)\b/i, "never")
-          .replace(/\b(appropriate)\b/i, "inappropriate");
-
-        questionStem = `True or False: According to the material, "${inverted}"`;
-        explanation = `False. The notes state that: "${curSentence}"`;
+        statementText = createMutatedDistractorFromSentence(curSentence, i, isStatisticalDoc);
+        explanation = `False. According to the uploaded material: "${curSentence}"`;
       }
 
       builtQ = {
         id: qNum,
-        question: questionStem,
+        question: `Evaluate the following statement regarding ${itemTopic}: "${statementText}"`,
         options: [
-          isTrue ? "True (Consistent with notes)" : "True",
-          isTrue ? "False" : "False (Contradicts notes)",
-          "Cannot be determined from the material",
-          "Partially true under special assumptions",
+          "True — Accurately reflects the uploaded material",
+          "False — Contradicts the uploaded material",
+          "Partially true only under manual override conditions",
+          "Not mentioned anywhere in the reference material",
         ],
         answer: isTrue ? 0 : 1,
         explanation,
-        difficulty: (difficulty === "Adaptive"
-          ? i < count / 2
-            ? "Easy"
-            : "Medium"
-          : difficulty) as "Easy" | "Medium" | "Hard",
-        topic: topic && topic !== "Auto Detect" ? topic : "Conceptual Verification",
+        difficulty: itemDifficulty,
+        topic: itemTopic,
         competency: assignedCompetency,
         noteReference: curSentence,
         questionType: "True or False",
       };
-    } else if (effectiveType === "Conceptual" || effectiveType === "Scenario") {
-      const conceptMatch = curSentence.match(
-        /\b([A-Z][a-z]+(?:\s+[A-Za-z]+){0,3})\s+(is defined as|refers to|means|is used for|serves to|comprises)\s+(.*)/i,
+    } else {
+      const defMatch = curSentence.match(
+        /^(?:The\s+)?([A-Za-z][A-Za-z0-9\s()-]{2,42}?)\s+(is defined as|refers to|measures|weights|combines|is the|are the|serves as|consists of|includes)\s+([^.;]{15,220})/i,
       );
 
       let questionStem = "";
       let correctOpt = "";
-      let distractors: string[] = [];
 
-      if (conceptMatch) {
-        const subject = conceptMatch[1].trim();
-        const predicate = conceptMatch[3].replace(/[.;].*$/, "").trim();
+      if (defMatch && defMatch[1] && defMatch[3] && effectiveType !== "Scenario") {
+        const subject = defMatch[1].trim();
+        const verb = defMatch[2]!.trim().toLowerCase();
+        const predicate = defMatch[3].trim();
 
-        questionStem = `In official statistical operations, what is the primary role or definition of "${subject}"?`;
-        correctOpt = predicate.charAt(0).toUpperCase() + predicate.slice(1);
-
-        distractors = [
-          `To substitute for complete census enumeration without auxiliary weights`,
-          `To eliminate administrative reporting overhead across state directorates`,
-          `To maximize non-response rates during secondary stage unit selection`,
-        ];
-      } else {
-        questionStem = `Based on the uploaded learning notes, which of the following statements is mathematically and procedurally correct?`;
+        questionStem = `According to the material on "${itemTopic}", how is "${subject}" described?`;
+        correctOpt = `${
+          verb === "is defined as" || verb === "is the" || verb === "are the"
+            ? "It is "
+            : `It ${verb} `
+        }${predicate}.`;
+      } else if (effectiveType === "Scenario") {
+        const template = SCENARIO_STEM_TEMPLATES[i % SCENARIO_STEM_TEMPLATES.length]!;
+        questionStem = template(itemTopic, keyTerm);
         correctOpt = curSentence;
-
-        const randTerm1 = candidateDistractorTerms[(i * 3) % candidateDistractorTerms.length];
-        const randTerm2 = candidateDistractorTerms[(i * 3 + 1) % candidateDistractorTerms.length];
-        const randTerm3 = candidateDistractorTerms[(i * 3 + 2) % candidateDistractorTerms.length];
-
-        distractors = [
-          `${randTerm1} can be entirely omitted when calculating the variance of multi-stage estimators.`,
-          `${randTerm2} operates independently of standard quality control and imputation guidelines.`,
-          `${randTerm3} applies exclusively to unweighted sample tabulations in official publications.`,
-        ];
+      } else {
+        const template = MCQ_STEM_TEMPLATES[i % MCQ_STEM_TEMPLATES.length]!;
+        questionStem = template(itemTopic, keyTerm);
+        correctOpt = curSentence;
       }
 
-      const answerIndex = (i + 1) % 4;
+      const otherSentence1 = prioritized[(i + 2) % prioritized.length] || curSentence;
+      const otherSentence2 = prioritized[(i + 4) % prioritized.length] || curSentence;
+
+      const d1 = createMutatedDistractorFromSentence(curSentence, i * 3, isStatisticalDoc);
+      const d2 =
+        otherSentence1 !== curSentence
+          ? createMutatedDistractorFromSentence(otherSentence1, i * 3 + 1, isStatisticalDoc)
+          : distractorPool[(i * 3 + 1) % distractorPool.length]!;
+      const d3 =
+        distractorPool[(i * 3 + 2) % distractorPool.length] ??
+        createMutatedDistractorFromSentence(otherSentence2, i * 3 + 2, isStatisticalDoc);
+
+      const distractors = [d1, d2, d3];
+
+      const answerIndex = (i * 3 + 1) % 4;
       const allOpts: [string, string, string, string] = ["", "", "", ""];
       let dIdx = 0;
       for (let pos = 0; pos < 4; pos++) {
@@ -919,7 +1135,7 @@ export function generateQuestionsWithNLP(notes: string, config: QuizConfig): MCQ
           allOpts[pos] = correctOpt;
         } else {
           allOpts[pos] =
-            distractors[dIdx++] || `Alternative interpretation not supported by the framework`;
+            distractors[dIdx++] || distractorPool[(i + pos) % distractorPool.length]!;
         }
       }
 
@@ -928,74 +1144,12 @@ export function generateQuestionsWithNLP(notes: string, config: QuizConfig): MCQ
         question: questionStem,
         options: allOpts,
         answer: answerIndex,
-        explanation: `Correct answer: "${correctOpt}". This is directly substantiated by the uploaded notes: "${curSentence}"`,
-        difficulty: (difficulty === "Adaptive"
-          ? i < count / 2
-            ? "Medium"
-            : "Hard"
-          : difficulty) as "Easy" | "Medium" | "Hard",
-        topic: topic && topic !== "Auto Detect" ? topic : "Statistical Analysis & Methodology",
+        explanation: `Correct Answer: "${correctOpt}". Source excerpt from notes: "${curSentence}"`,
+        difficulty: itemDifficulty,
+        topic: itemTopic,
         competency: assignedCompetency,
         noteReference: curSentence,
-        questionType: "Conceptual",
-      };
-    } else {
-      const defMatch = curSentence.match(
-        /^([A-Z][A-Za-z0-9\s()-]{2,35}?)\s+(is defined as|refers to|means|represents|is the|are the)\s+([^.;]{15,180})/i,
-      );
-
-      let questionStem = "";
-      let correctOpt = "";
-      let distractors: string[] = [];
-
-      if (defMatch && defMatch[1].trim().length > 3) {
-        const term = defMatch[1].trim();
-        const definition = defMatch[3].trim();
-        questionStem = `Which of the following best describes "${term}" as specified in the reference notes?`;
-        correctOpt = definition.charAt(0).toUpperCase() + definition.slice(1);
-
-        const alt1 = candidateDistractorTerms[(i * 2) % candidateDistractorTerms.length];
-        const alt2 = candidateDistractorTerms[(i * 2 + 1) % candidateDistractorTerms.length];
-
-        distractors = [
-          `A procedure dedicated to replacing ${alt1} during field audit stages`,
-          `An auxiliary metric used strictly when ${alt2} cannot be observed`,
-          `A discretionary adjustment that does not impact official tabulations`,
-        ];
-      } else {
-        questionStem = `Regarding the guidelines in the uploaded document, which of the following is correct?`;
-        correctOpt = curSentence;
-
-        distractors = [
-          `The methodology mandates replacing design weights with uncalibrated ratio estimators.`,
-          `Non-sampling errors are eliminated by increasing the sample size of secondary units.`,
-          `Metadata releases are optional when publishing provisional survey aggregates.`,
-        ];
-      }
-
-      const answerIndex = i % 4;
-      const allOpts: [string, string, string, string] = ["", "", "", ""];
-      let dIdx = 0;
-      for (let pos = 0; pos < 4; pos++) {
-        if (pos === answerIndex) {
-          allOpts[pos] = correctOpt;
-        } else {
-          allOpts[pos] = distractors[dIdx++] || `Alternative methodological consideration`;
-        }
-      }
-
-      builtQ = {
-        id: qNum,
-        question: questionStem,
-        options: allOpts,
-        answer: answerIndex,
-        explanation: `Accurate interpretation: "${correctOpt}". Sourced from: "${curSentence}"`,
-        difficulty: (difficulty === "Adaptive" ? "Medium" : difficulty) as
-          "Easy" | "Medium" | "Hard",
-        topic: topic && topic !== "Auto Detect" ? topic : "Statistical Principles",
-        competency: assignedCompetency,
-        noteReference: curSentence,
-        questionType: "MCQ",
+        questionType: effectiveType,
       };
     }
 
@@ -1006,8 +1160,20 @@ export function generateQuestionsWithNLP(notes: string, config: QuizConfig): MCQ
 }
 
 /**
+ * Helper to strip markdown code fences (```json ... ```) from LLM responses
+ */
+function parseJsonFromLlmText(rawText: string): unknown {
+  const cleaned = rawText
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  return JSON.parse(cleaned);
+}
+
+/**
  * Call External LLM API (Google Gemini or OpenAI)
- * Falls back gracefully to Built-in NLP if anything fails.
+ * Falls back gracefully to Built-in NLP if no key is provided or if network/API fails.
  */
 export async function generateQuestionsWithLLM(
   notes: string,
@@ -1016,13 +1182,13 @@ export async function generateQuestionsWithLLM(
   const { aiProvider, apiKey, count, difficulty, qType, topic, customSuggestions, competency } =
     config;
 
-  if (!apiKey || aiProvider === "builtin") {
+  if (!apiKey || !apiKey.trim() || aiProvider === "builtin") {
     return generateQuestionsWithNLP(notes, config);
   }
 
   const promptText = `
-You are an expert psychometrician and statistical educator specializing in official statistics and civil service capacity development (MoSPI / National Statistical Systems).
-Generate exactly ${count} multiple choice questions strictly based on the following learning material/notes.
+You are an expert assessment creator and educator.
+Generate exactly ${count} multiple choice questions strictly based on the following uploaded learning material/notes.
 
 Requirements:
 - Difficulty level: ${difficulty}
@@ -1035,7 +1201,7 @@ Return ONLY a valid JSON array of question objects with this exact structure:
 [
   {
     "id": 1,
-    "question": "Question text here?",
+    "question": "Specific, clear question text?",
     "options": ["Option A", "Option B", "Option C", "Option D"],
     "answer": 0,
     "explanation": "Detailed pedagogical explanation citing specific facts from notes.",
@@ -1055,41 +1221,62 @@ ${notes.slice(0, 15000)}
 
   try {
     if (aiProvider === "gemini") {
-      const model = config.modelName || "gemini-2.0-flash";
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      const requestedModel = config.modelName || "gemini-2.5-flash";
+      const candidateModels = Array.from(
+        new Set([requestedModel, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]),
+      );
 
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: promptText }] }],
-          generationConfig: {
-            temperature: 0.2,
-            responseMimeType: "application/json",
-          },
-        }),
-      });
+      let lastErr: Error | null = null;
+      for (const model of candidateModels) {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey.trim()}`;
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: promptText }] }],
+            generationConfig: {
+              temperature: 0.25,
+              responseMimeType: "application/json",
+            },
+          }),
+        });
 
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Gemini API error (${response.status}): ${errText}`);
+        if (!response.ok) {
+          const errText = await response.text();
+          lastErr = new Error(`Gemini API (${model} -> ${response.status}): ${errText}`);
+          continue;
+        }
+
+        const data = await response.json();
+        const rawJson = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!rawJson) {
+          lastErr = new Error("Empty response from Gemini API");
+          continue;
+        }
+
+        const parsed = parseJsonFromLlmText(rawJson);
+        const arr = Array.isArray(parsed)
+          ? parsed
+          : (parsed as Record<string, unknown>)?.["questions"] ||
+            Object.values(parsed as Record<string, unknown>)[0];
+
+        if (Array.isArray(arr) && arr.length > 0) {
+          return arr.map((q: MCQQuestion, idx: number) => ({
+            ...q,
+            id: idx + 1,
+            answer: Math.max(0, Math.min(3, Number(q.answer) || 0)),
+            options: (Array.isArray(q.options) ? q.options.slice(0, 4) : ["A", "B", "C", "D"]) as [
+              string,
+              string,
+              string,
+              string,
+            ],
+            difficulty: q.difficulty || "Medium",
+            questionType: q.questionType || "MCQ",
+          }));
+        }
       }
-
-      const data = await response.json();
-      const rawJson = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!rawJson) throw new Error("No response text received from Gemini API");
-
-      const parsed: MCQQuestion[] = JSON.parse(rawJson);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.map((q, idx) => ({
-          ...q,
-          id: idx + 1,
-          answer: Number(q.answer) % 4,
-          options: q.options.slice(0, 4) as [string, string, string, string],
-          difficulty: q.difficulty || "Medium",
-          questionType: q.questionType || "MCQ",
-        }));
-      }
+      if (lastErr) throw lastErr;
     } else if (aiProvider === "openai") {
       const model = config.modelName || "gpt-4o-mini";
       const url = "https://api.openai.com/v1/chat/completions";
@@ -1098,7 +1285,7 @@ ${notes.slice(0, 15000)}
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+          Authorization: `Bearer ${apiKey.trim()}`,
         },
         body: JSON.stringify({
           model,
@@ -1109,8 +1296,7 @@ ${notes.slice(0, 15000)}
             },
             { role: "user", content: promptText },
           ],
-          temperature: 0.2,
-          response_format: { type: "json_object" },
+          temperature: 0.25,
         }),
       });
 
@@ -1123,16 +1309,22 @@ ${notes.slice(0, 15000)}
       const rawContent = data.choices?.[0]?.message?.content;
       if (!rawContent) throw new Error("No response from OpenAI");
 
-      const parsedObj = JSON.parse(rawContent);
+      const parsedObj = parseJsonFromLlmText(rawContent);
       const arr = Array.isArray(parsedObj)
         ? parsedObj
-        : parsedObj.questions || Object.values(parsedObj)[0];
+        : (parsedObj as Record<string, unknown>)?.["questions"] ||
+          Object.values(parsedObj as Record<string, unknown>)[0];
       if (Array.isArray(arr) && arr.length > 0) {
-        return arr.map((q, idx) => ({
+        return arr.map((q: MCQQuestion, idx: number) => ({
           ...q,
           id: idx + 1,
-          answer: Number(q.answer) % 4,
-          options: q.options.slice(0, 4) as [string, string, string, string],
+          answer: Math.max(0, Math.min(3, Number(q.answer) || 0)),
+          options: (Array.isArray(q.options) ? q.options.slice(0, 4) : ["A", "B", "C", "D"]) as [
+            string,
+            string,
+            string,
+            string,
+          ],
           difficulty: q.difficulty || "Medium",
           questionType: q.questionType || "MCQ",
         }));

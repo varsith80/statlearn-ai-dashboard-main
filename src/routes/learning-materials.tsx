@@ -13,6 +13,13 @@ import {
   ArrowRight,
   RotateCcw,
   CheckCircle2,
+  Landmark,
+  Download,
+  Copy,
+  Check,
+  RefreshCw,
+  Layers,
+  FileDown,
 } from "lucide-react";
 import { PageHeader, SectionCard } from "@/components/common/PageHeader";
 import { StatusPill } from "@/components/common/PriorityBadge";
@@ -53,7 +60,8 @@ export const Route = createFileRoute("/learning-materials")({
 
 function LearningMaterials() {
   const navigate = useNavigate();
-  const { materials, addMaterial, removeMaterial, resetMaterials } = useMaterialsStore();
+  const { materials, addMaterial, removeMaterial, resetMaterials, syncIgotNotesForDomain } =
+    useMaterialsStore();
 
   const [search, setSearch] = useState("");
   const [selectedCompetency, setSelectedCompetency] = useState("All");
@@ -67,6 +75,12 @@ function LearningMaterials() {
 
   // Preview Note Dialog
   const [previewDoc, setPreviewDoc] = useState<NoteDocument | null>(null);
+  const [isCopied, setIsCopied] = useState(false);
+
+  // Domain Full Notes Dialog
+  const [domainNotesModal, setDomainNotesModal] = useState<string | null>(null);
+  const [isDomainCopied, setIsDomainCopied] = useState(false);
+  const [isSyncingIgot, setIsSyncingIgot] = useState(false);
 
   // Filter materials
   const filteredMaterials = materials.filter((m) => {
@@ -80,6 +94,46 @@ function LearningMaterials() {
 
     return matchesSearch && matchesComp;
   });
+
+  // Handle iGOT API sync for a specific domain
+  function handleSyncIgot(domain: string) {
+    if (domain === "All") {
+      toast.info("Please select a specific competency domain first to sync targeted iGOT notes.");
+      return;
+    }
+    setIsSyncingIgot(true);
+    setTimeout(() => {
+      const added = syncIgotNotesForDomain(domain);
+      setIsSyncingIgot(false);
+      if (added.length > 0) {
+        toast.success(`iGOT Karmayogi API: Synced ${added.length} official module(s) for "${domain}".`);
+      } else {
+        toast.info(`Latest iGOT Karmayogi curricula for "${domain}" is already synchronized.`);
+      }
+    }, 500);
+  }
+
+  // Handle downloading text content as file
+  function handleDownloadText(filename: string, text: string) {
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast.success(`Downloaded "${filename}"`);
+  }
+
+  // Copy text helper
+  function handleCopyText(text: string, setCopyState: (val: boolean) => void) {
+    navigator.clipboard.writeText(text);
+    setCopyState(true);
+    toast.success("Notes copied to clipboard!");
+    setTimeout(() => setCopyState(false), 2000);
+  }
 
   // Handle file upload in modal
   async function handleModalFile(file: File) {
@@ -157,6 +211,25 @@ function LearningMaterials() {
     stageDocumentForQuiz(doc);
     navigate({ to: "/quiz-generator" });
   }
+
+  // Aggregate all notes for a specific domain
+  const domainMaterials =
+    selectedCompetency === "All"
+      ? materials
+      : materials.filter((m) => m.suggestedCompetencies.includes(selectedCompetency));
+
+  const fullDomainNotesText = domainMaterials
+    .map(
+      (m, idx) =>
+        `========================================================================================\n` +
+        `DOCUMENT ${idx + 1}: ${m.name}\n` +
+        `Type: ${m.type} | Word Count: ${m.wordCount} | Topics: ${m.detectedTopics.join(", ")}\n` +
+        `Summary: ${m.summary || "Official statistical study curriculum"}\n` +
+        `========================================================================================\n\n` +
+        m.content.trim() +
+        `\n\n`,
+    )
+    .join("\n");
 
   return (
     <>
@@ -285,32 +358,96 @@ function LearningMaterials() {
       />
 
       {/* Search & Filter Toolbar */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search documents, topics, or keywords…"
-            className="w-full rounded-xl border border-border bg-card pl-9 pr-4 py-2 text-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none"
-          />
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative flex-1 max-w-md">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search documents, topics, or keywords…"
+              className="w-full rounded-xl border border-border bg-card pl-9 pr-4 py-2 text-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-muted-foreground mr-1">Domain:</span>
+            {["All", ...COMPETENCY_DOMAINS].map((c) => (
+              <Button
+                key={c}
+                size="sm"
+                variant={selectedCompetency === c ? "default" : "outline"}
+                onClick={() => setSelectedCompetency(c)}
+                className="text-xs h-8"
+              >
+                {c}
+              </Button>
+            ))}
+          </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-xs text-muted-foreground mr-1">Competency:</span>
-          {["All", ...COMPETENCY_DOMAINS.slice(0, 4)].map((c) => (
-            <Button
-              key={c}
-              size="sm"
-              variant={selectedCompetency === c ? "default" : "outline"}
-              onClick={() => setSelectedCompetency(c)}
-              className="text-xs h-8"
-            >
-              {c}
-            </Button>
-          ))}
-        </div>
+        {/* Selected Domain Knowledge & iGOT Karmayogi Hub Banner */}
+        {selectedCompetency !== "All" && (
+          <div className="rounded-2xl border border-primary/20 bg-primary/5 p-5 transition-all">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                    <Landmark className="size-4" />
+                  </span>
+                  <h3 className="font-display text-base font-semibold text-foreground">
+                    {selectedCompetency} Knowledge Hub
+                  </h3>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                    <CheckCircle2 className="size-3" /> iGOT Karmayogi API Linked
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground max-w-xl">
+                  Displaying {domainMaterials.length} official curriculum documents and training notes for{" "}
+                  <strong>{selectedCompetency}</strong>. Sync the latest civil-service modules or review the complete domain handbook.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 text-xs bg-background/80 hover:bg-background"
+                  disabled={isSyncingIgot}
+                  onClick={() => handleSyncIgot(selectedCompetency)}
+                >
+                  <RefreshCw className={cn("size-3.5", isSyncingIgot && "animate-spin text-primary")} />
+                  {isSyncingIgot ? "Syncing API..." : "Sync via iGOT API"}
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant="default"
+                  className="gap-1.5 text-xs"
+                  onClick={() => setDomainNotesModal(selectedCompetency)}
+                >
+                  <BookOpen className="size-3.5" /> Read Full Domain Notes
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 text-xs bg-background/80 hover:bg-background"
+                  onClick={() =>
+                    handleDownloadText(
+                      `StatLearn_${selectedCompetency.replace(/\s+/g, "_")}_Notes.txt`,
+                      fullDomainNotesText,
+                    )
+                  }
+                  title="Download full notes for this domain as .txt"
+                >
+                  <Download className="size-3.5" /> Export (.TXT)
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Materials List */}
@@ -406,26 +543,46 @@ function LearningMaterials() {
       {/* Preview Dialog */}
       {previewDoc && (
         <Dialog open={!!previewDoc} onOpenChange={() => setPreviewDoc(null)}>
-          <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
+          <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 <FileText className="size-5 text-primary" />
                 {previewDoc.name}
               </DialogTitle>
               <DialogDescription>
-                {previewDoc.wordCount} words · {previewDoc.size} · Uploaded {previewDoc.uploadedAt}
+                {previewDoc.wordCount} words · {previewDoc.size} · Uploaded {previewDoc.uploadedAt} ·{" "}
+                <span className="font-medium text-foreground">
+                  Competencies: {previewDoc.suggestedCompetencies.join(", ")}
+                </span>
               </DialogDescription>
             </DialogHeader>
 
-            <div className="mt-2 flex-1 overflow-y-auto rounded-lg border border-border bg-muted/30 p-4 text-xs font-mono leading-relaxed whitespace-pre-wrap">
+            <div className="mt-2 flex-1 overflow-y-auto rounded-lg border border-border bg-muted/30 p-4 text-xs font-mono leading-relaxed whitespace-pre-wrap select-text">
               {previewDoc.content}
             </div>
 
-            <DialogFooter className="mt-4 flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">
-                Topics: {previewDoc.detectedTopics.join(", ")}
-              </span>
-              <div className="flex gap-2">
+            <DialogFooter className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 text-xs"
+                  onClick={() => handleCopyText(previewDoc.content, setIsCopied)}
+                >
+                  {isCopied ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
+                  {isCopied ? "Copied" : "Copy Content"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 text-xs"
+                  onClick={() => handleDownloadText(previewDoc.name, previewDoc.content)}
+                >
+                  <Download className="size-3.5" /> Download (.TXT)
+                </Button>
+              </div>
+
+              <div className="flex items-center gap-2">
                 <Button variant="outline" size="sm" onClick={() => setPreviewDoc(null)}>
                   Close
                 </Button>
@@ -439,6 +596,82 @@ function LearningMaterials() {
                 >
                   <Sparkles className="size-3.5" /> Generate Quiz
                 </Button>
+              </div>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Full Domain Study Notes Dialog */}
+      {domainNotesModal && (
+        <Dialog open={!!domainNotesModal} onOpenChange={() => setDomainNotesModal(null)}>
+          <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+            <DialogHeader>
+              <div className="flex items-center justify-between">
+                <DialogTitle className="flex items-center gap-2 text-lg">
+                  <Landmark className="size-5 text-primary" />
+                  {domainNotesModal} – Complete Official Study Notes & Handbook
+                </DialogTitle>
+                <span className="rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                  iGOT Karmayogi Synced
+                </span>
+              </div>
+              <DialogDescription>
+                Full synthesized training handbook comprising {domainMaterials.length} official documents from
+                MoSPI, NSSTA Greater Noida, and iGOT Karmayogi civil-service courses.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="mt-3 flex-1 overflow-y-auto rounded-xl border border-border bg-card p-5 text-xs font-mono leading-relaxed whitespace-pre-wrap select-text shadow-inner">
+              {fullDomainNotesText || "No notes currently available for this domain. Click 'Sync via iGOT API' to retrieve official modules."}
+            </div>
+
+            <DialogFooter className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 text-xs"
+                  onClick={() => handleCopyText(fullDomainNotesText, setIsDomainCopied)}
+                >
+                  {isDomainCopied ? (
+                    <Check className="size-3.5 text-emerald-500" />
+                  ) : (
+                    <Copy className="size-3.5" />
+                  )}
+                  {isDomainCopied ? "All Notes Copied" : "Copy All Notes"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 text-xs"
+                  onClick={() =>
+                    handleDownloadText(
+                      `StatLearn_${domainNotesModal.replace(/\s+/g, "_")}_Handbook.txt`,
+                      fullDomainNotesText,
+                    )
+                  }
+                >
+                  <Download className="size-3.5" /> Download Full Notes (.TXT)
+                </Button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => setDomainNotesModal(null)}>
+                  Close
+                </Button>
+                {domainMaterials.length > 0 && (
+                  <Button
+                    size="sm"
+                    className="gap-1.5"
+                    onClick={() => {
+                      handleGenerateFromDoc(domainMaterials[0]);
+                      setDomainNotesModal(null);
+                    }}
+                  >
+                    <Sparkles className="size-3.5" /> Generate Domain Quiz
+                  </Button>
+                )}
               </div>
             </DialogFooter>
           </DialogContent>

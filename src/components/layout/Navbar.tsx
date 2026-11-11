@@ -15,6 +15,7 @@ import {
   Radar,
   CheckCheck,
   X,
+  Database,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -27,6 +28,7 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   stageDocumentForQuiz,
+  useDatabaseStatus,
   useLearningStore,
   useMaterialsStore,
   useNotificationsStore,
@@ -43,6 +45,7 @@ export function Navbar({ onOpenMobileNav }: { onOpenMobileNav: () => void }) {
   const { courses } = useLearningStore();
   const { materials } = useMaterialsStore();
   const { competencyRadar } = useQuizResultsStore();
+  const { stats: dbStats } = useDatabaseStatus();
 
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -258,6 +261,16 @@ export function Navbar({ onOpenMobileNav }: { onOpenMobileNav: () => void }) {
       </div>
 
       <div className="ml-auto flex items-center gap-1.5">
+        <Link
+          to="/settings"
+          title="View Backend SQLite Database & SQL Console"
+          className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-500/15 dark:text-emerald-400 mr-1"
+        >
+          <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          <Database className="size-3" />
+          <span>{dbStats?.connected ? "SQLite DB • Active" : "SQLite DB • Syncing"}</span>
+        </Link>
+
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button

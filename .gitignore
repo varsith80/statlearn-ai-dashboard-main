@@ -30,3 +30,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# SQLite temporary files
+database/*.db-wal
+database/*.db-shm

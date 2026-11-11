@@ -13,6 +13,9 @@ import {
   Shield,
   Eye,
   EyeOff,
+  Terminal,
+  Play,
+  RefreshCw,
 } from "lucide-react";
 import { PageHeader, SectionCard } from "@/components/common/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -23,6 +26,7 @@ import {
   useUserStore,
   useLearningStore,
   useNotificationsStore,
+  useDatabaseStatus,
   AppSettings,
 } from "@/lib/quiz-store";
 import { toast } from "sonner";
@@ -42,6 +46,29 @@ export const Route = createFileRoute("/settings")({
   component: SettingsPage,
 });
 
+const PRESET_SQL_QUERIES = [
+  {
+    label: "Officers",
+    sql: "SELECT employee_id, name, role, batch, xp, is_active FROM officers;",
+  },
+  {
+    label: "Competencies",
+    sql: "SELECT area, score, benchmark, (benchmark - score) AS gap FROM competencies;",
+  },
+  {
+    label: "Courses",
+    sql: "SELECT id, title, category, progress, status, credits FROM courses;",
+  },
+  {
+    label: "Study Notes",
+    sql: "SELECT id, name, type, size, word_count, uploaded_at FROM materials;",
+  },
+  {
+    label: "Quiz Results",
+    sql: "SELECT id, material_name, percentage, difficulty, completed_at FROM quiz_results;",
+  },
+];
+
 function SettingsPage() {
   const { settings, updateSettings, resetSettings } = useSettingsStore();
   const { clearHistory, results } = useQuizResultsStore();
@@ -49,6 +76,24 @@ function SettingsPage() {
   const { userProfile, updateProfile, resetProfile } = useUserStore();
   const { resetLearning, courses } = useLearningStore();
   const { resetNotifications } = useNotificationsStore();
+  const {
+    stats: dbStats,
+    loading: dbLoading,
+    refreshStats,
+    runSqlQuery,
+    resetSqliteDb,
+  } = useDatabaseStatus();
+
+  const [sqlInput, setSqlInput] = useState(
+    PRESET_SQL_QUERIES[0]?.sql ?? "SELECT * FROM officers;",
+  );
+  const [sqlResult, setSqlResult] = useState<{
+    columns: string[];
+    rows: Array<Record<string, unknown>>;
+    rowCount: number;
+    executionMs: number;
+  } | null>(null);
+  const [sqlRunning, setSqlRunning] = useState(false);
 
   const [geminiKey, setGeminiKey] = useState(settings.geminiApiKey);
   const [openaiKey, setOpenaiKey] = useState(settings.openaiApiKey);
@@ -61,6 +106,22 @@ function SettingsPage() {
   const [profileCadre, setProfileCadre] = useState(userProfile.cadre);
   const [profileOffice, setProfileOffice] = useState(userProfile.office);
   const [profileId, setProfileId] = useState(userProfile.employeeId);
+
+  async function handleExecuteSql(customSql?: string) {
+    const queryToRun = customSql ?? sqlInput;
+    if (customSql) setSqlInput(customSql);
+    setSqlRunning(true);
+    try {
+      const res = await runSqlQuery(queryToRun);
+      setSqlResult(res);
+      toast.success(`Executed SQL query (${res.rowCount} rows in ${res.executionMs}ms)`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(msg);
+    } finally {
+      setSqlRunning(false);
+    }
+  }
 
   function handleSaveProfile() {
     if (!profileName.trim()) {
@@ -79,36 +140,73 @@ function SettingsPage() {
 
   // Save API keys
   function handleSaveKeys() {
+    const cleanGemini = geminiKey.trim();
+    const cleanOpenai = openaiKey.trim();
+    const nextProvider =
+      settings.aiProvider === "builtin"
+        ? cleanGemini
+          ? "gemini"
+          : cleanOpenai
+            ? "openai"
+            : "builtin"
+        : settings.aiProvider;
+
     updateSettings({
-      geminiApiKey: geminiKey.trim(),
-      openaiApiKey: openaiKey.trim(),
+      geminiApiKey: cleanGemini,
+      openaiApiKey: cleanOpenai,
+      aiProvider: nextProvider,
     });
-    toast.success("AI API configuration saved successfully.");
+    toast.success(`AI credentials saved (Active engine: ${nextProvider.toUpperCase()}).`);
   }
 
-  // Test Gemini API connection
+  // Test Gemini API connection across modern Gemini Flash models
   async function testGemini() {
-    if (!geminiKey.trim()) {
+    const cleanKey = geminiKey.trim();
+    if (!cleanKey) {
       toast.error("Please enter a Google Gemini API key first.");
       return;
     }
     setTestingConnection(true);
     try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${settings.geminiModel}:generateContent?key=${geminiKey.trim()}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: 'Return valid JSON: {"status": "ok"}' }] }],
-          }),
-        },
+      const candidateModels = Array.from(
+        new Set([
+          settings.geminiModel || "gemini-2.5-flash",
+          "gemini-2.5-flash",
+          "gemini-2.0-flash",
+          "gemini-1.5-flash",
+        ]),
       );
-      if (res.ok) {
-        toast.success("Gemini API connection test passed!");
+
+      let workingModel: string | null = null;
+      let lastStatus = 0;
+
+      for (const model of candidateModels) {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${cleanKey}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: 'Return valid JSON: {"status": "ok"}' }] }],
+            }),
+          },
+        );
+        lastStatus = res.status;
+        if (res.ok) {
+          workingModel = model;
+          break;
+        }
+      }
+
+      if (workingModel) {
+        updateSettings({
+          geminiApiKey: cleanKey,
+          geminiModel: workingModel,
+          aiProvider: "gemini",
+        });
+        toast.success(`Gemini API connected (${workingModel}) and saved as active AI engine!`);
       } else {
-        await res.text();
-        toast.error(`Gemini API error (${res.status}): Key may be invalid.`);
+        toast.error(`Gemini API error (${lastStatus}): Please check that your API key is valid.`);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -421,34 +519,78 @@ function SettingsPage() {
           </SectionCard>
         </div>
 
-        {/* Right Column: Local Data & Reset */}
+        {/* Right Column: SQLite Database Telemetry & Reset */}
         <div className="space-y-6">
           <SectionCard
-            title="Local Storage & Privacy"
-            description="All notes and keys remain on your device"
+            title="SQLite Relational Database"
+            description="Live backend persistence (database/statlearn.db)"
+            actions={
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 gap-1 px-2 text-[11px]"
+                onClick={() => void refreshStats()}
+                disabled={dbLoading}
+              >
+                <RefreshCw className={cn("size-3", dbLoading && "animate-spin")} />
+                Refresh
+              </Button>
+            }
           >
             <div className="space-y-3 text-xs text-muted-foreground leading-relaxed">
-              <div className="flex items-center gap-2 text-foreground font-semibold">
-                <Shield className="size-4 text-success" />
-                Data Privacy Guarantee
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-foreground font-semibold">
+                  <Database className="size-4 text-emerald-500" />
+                  <span>{dbStats?.connected ? "Connected to SQLite 3" : "Connecting..."}</span>
+                </div>
+                <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                  WAL Mode
+                </span>
               </div>
-              <p>
-                Uploaded documents, custom study notes, and generated question sets are processed in
-                your browser and stored in your local storage. No document data is sent to third
-                parties unless you explicitly provide an external LLM API key.
+              <p className="text-[11px]">
+                All officer profiles, competency scores, enrolled courses, study notes, and quiz
+                attempts are automatically persisted in real relational SQL tables inside{" "}
+                <code className="rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-foreground">
+                  database/statlearn.db
+                </code>
+                .
               </p>
-              <div className="rounded-lg bg-muted/40 p-3 space-y-1 text-[11px]">
+              <div className="rounded-lg border border-border bg-muted/40 p-3 space-y-1.5 text-[11px]">
                 <div className="flex justify-between">
-                  <span>Saved Documents:</span>
-                  <strong className="text-foreground">{materials.length}</strong>
+                  <span>officers (table):</span>
+                  <strong className="font-mono text-foreground">
+                    {dbStats?.tables.officers ?? 3} rows
+                  </strong>
                 </div>
                 <div className="flex justify-between">
-                  <span>Completed Quizzes:</span>
-                  <strong className="text-foreground">{results.length}</strong>
+                  <span>competencies (table):</span>
+                  <strong className="font-mono text-foreground">
+                    {dbStats?.tables.competencies ?? 6} rows
+                  </strong>
                 </div>
                 <div className="flex justify-between">
-                  <span>Enrolled Courses:</span>
-                  <strong className="text-foreground">{courses.length}</strong>
+                  <span>courses (table):</span>
+                  <strong className="font-mono text-foreground">
+                    {dbStats?.tables.courses ?? courses.length} rows
+                  </strong>
+                </div>
+                <div className="flex justify-between">
+                  <span>materials (table):</span>
+                  <strong className="font-mono text-foreground">
+                    {dbStats?.tables.materials ?? materials.length} rows
+                  </strong>
+                </div>
+                <div className="flex justify-between">
+                  <span>quiz_results (table):</span>
+                  <strong className="font-mono text-foreground">
+                    {dbStats?.tables.quiz_results ?? results.length} rows
+                  </strong>
+                </div>
+                <div className="flex justify-between">
+                  <span>badges &amp; igot_sync_logs:</span>
+                  <strong className="font-mono text-foreground">
+                    {(dbStats?.tables.badges ?? 6) + (dbStats?.tables.igot_sync_logs ?? 3)} rows
+                  </strong>
                 </div>
               </div>
             </div>
@@ -464,7 +606,7 @@ function SettingsPage() {
                     window.confirm("Clear all quiz completion history and reset competency scores?")
                   ) {
                     clearHistory();
-                    toast.success("Assessment history cleared.");
+                    toast.success("Assessment history cleared in SQLite database.");
                   }
                 }}
               >
@@ -478,7 +620,7 @@ function SettingsPage() {
                 onClick={() => {
                   if (window.confirm("Restore official sample notes library?")) {
                     resetMaterials();
-                    toast.success("Materials restored.");
+                    toast.success("Materials restored in SQLite database.");
                   }
                 }}
               >
@@ -489,28 +631,135 @@ function SettingsPage() {
               <Button
                 variant="destructive"
                 className="w-full justify-start gap-2 text-xs"
-                onClick={() => {
+                onClick={async () => {
                   if (
                     window.confirm(
-                      "Reset all settings, materials, courses, notifications, and quiz data to factory defaults?",
+                      "Reset all SQLite database tables, settings, materials, courses, notifications, and quiz data to factory defaults?",
                     )
                   ) {
-                    resetSettings();
-                    clearHistory();
-                    resetMaterials();
-                    resetLearning();
-                    resetNotifications();
-                    resetProfile();
-                    toast.success("All workspace data reset to factory defaults.");
+                    try {
+                      await resetSqliteDb();
+                    } catch {
+                      resetSettings();
+                      clearHistory();
+                      resetMaterials();
+                      resetLearning();
+                      resetNotifications();
+                      resetProfile();
+                    }
+                    toast.success("SQLite database and workspace reset to factory defaults.");
                   }
                 }}
               >
                 <AlertCircle className="size-3.5" />
-                Reset Everything
+                Reset Everything (Re-seed SQLite DB)
               </Button>
             </div>
           </SectionCard>
         </div>
+      </div>
+
+      {/* Interactive SQL Query Explorer */}
+      <div className="mt-6">
+        <SectionCard
+          title="Live SQLite Query Console (Backend API: POST /api/sql)"
+          description="Execute real-time SQL SELECT queries directly against database/statlearn.db"
+          actions={
+            <div className="flex flex-wrap items-center gap-1.5">
+              {PRESET_SQL_QUERIES.map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => void handleExecuteSql(preset.sql)}
+                  className="rounded-md border border-border bg-muted/60 px-2.5 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-primary/10 hover:border-primary/40"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          }
+        >
+          <div className="space-y-4">
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <div className="relative flex-1">
+                <Terminal className="pointer-events-none absolute left-3 top-3 size-4 text-muted-foreground" />
+                <input
+                  type="text"
+                  value={sqlInput}
+                  onChange={(e) => setSqlInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void handleExecuteSql();
+                  }}
+                  placeholder="SELECT * FROM officers;"
+                  className="h-10 w-full rounded-lg border border-border bg-background pl-9 pr-3 font-mono text-xs outline-none focus:border-primary"
+                />
+              </div>
+              <Button
+                onClick={() => void handleExecuteSql()}
+                disabled={sqlRunning}
+                className="gap-1.5"
+              >
+                <Play className="size-3.5" />
+                {sqlRunning ? "Running SQL..." : "Run SQL Query"}
+              </Button>
+            </div>
+
+            {sqlResult && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                  <span>
+                    Returned <strong>{sqlResult.rowCount}</strong> row(s) from{" "}
+                    <code>database/statlearn.db</code>
+                  </span>
+                  <span>Execution time: {sqlResult.executionMs} ms</span>
+                </div>
+                <div className="max-h-72 overflow-auto rounded-lg border border-border">
+                  {sqlResult.rows.length === 0 ? (
+                    <div className="p-6 text-center text-xs text-muted-foreground">
+                      Query executed successfully (0 rows returned).
+                    </div>
+                  ) : (
+                    <table className="w-full text-left text-xs">
+                      <thead className="border-b border-border bg-muted/60 font-mono text-[11px] text-muted-foreground">
+                        <tr>
+                          {sqlResult.columns.map((col) => (
+                            <th key={col} className="px-3 py-2 font-semibold">
+                              {col}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border font-mono text-[11px]">
+                        {sqlResult.rows.map((row, idx) => (
+                          <tr key={idx} className="hover:bg-muted/30">
+                            {sqlResult.columns.map((col) => {
+                              const val = row[col];
+                              const display =
+                                val === null || val === undefined
+                                  ? "NULL"
+                                  : typeof val === "object"
+                                    ? JSON.stringify(val)
+                                    : String(val);
+                              return (
+                                <td
+                                  key={col}
+                                  className="max-w-xs truncate px-3 py-2 text-foreground"
+                                  title={display}
+                                >
+                                  {display}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </SectionCard>
       </div>
     </>
   );

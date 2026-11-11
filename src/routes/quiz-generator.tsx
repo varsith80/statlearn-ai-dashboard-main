@@ -131,9 +131,16 @@ function QuizGenerator() {
       toast.success(`Loaded "${staged.name}" for assessment generation.`);
     } else if (!activeDoc && PRELOADED_NOTES.length > 0) {
       // Default to first preloaded note if none selected
-      setActiveDoc(PRELOADED_NOTES[0]);
+      setActiveDoc(PRELOADED_NOTES[0] ?? null);
     }
   }, []);
+
+  // Keep AI provider & defaults in sync when settings hydrate from SQLite
+  useEffect(() => {
+    if (settings.aiProvider) {
+      setAiProvider(settings.aiProvider);
+    }
+  }, [settings.aiProvider]);
 
   // Timer during active quiz
   useEffect(() => {
