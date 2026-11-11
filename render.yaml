@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: statlearn-ai-dashboard-main-2
+    runtime: node
+    plan: free
+    buildCommand: npm run build
+    startCommand: node .output/server/index.mjs
+    envVars:
+      - key: NODE_VERSION
+        value: 22
